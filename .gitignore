@@ -1,0 +1,11 @@
+key/
+lib/
+runs/
+wandb/
+*.log
+__pycache__/
+*.pyc
+.DS_Store
+.env
+*.h5
+*.csv
