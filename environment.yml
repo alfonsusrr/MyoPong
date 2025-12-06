@@ -3,11 +3,10 @@ channels:
   - conda-forge
   - defaults
 dependencies:
-  - python=3.9
+  - python=3.10
   - pip
   - pip:
     - stable-baselines3[extra]
-    - stable-baselines3-contrib
     - wandb
     - myosuite
     - gymnasium

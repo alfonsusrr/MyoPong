@@ -7,7 +7,7 @@ import time
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import CheckpointCallback
 from stable_baselines3.common.monitor import Monitor
-from stable_baselines3.common.vec_env import DummyVecEnv, VecMonitor
+from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
 
 from modules.callback.renderer import PeriodicVideoRecorder
 from modules.callback.wandb import WandbCallback
@@ -32,7 +32,7 @@ def parse_args() -> argparse.Namespace:
   parser.add_argument("--total-timesteps", type=int, default=30000000, help="Total PPO training timesteps")
   parser.add_argument("--log-dir", type=str, default=os.path.join("runs", "ppo_tabletennis"), help="Log directory")
   parser.add_argument("--seed", type=int, default=0, help="Random seed")
-  parser.add_argument("--num-envs", type=int, default=16, help="Number of parallel environments")
+  parser.add_argument("--num-envs", type=int, default=64, help="Number of parallel environments")
   parser.add_argument("--policy", type=str, default="MlpPolicy", help="Stable-Baselines3 policy")
   parser.add_argument("--tensorboard-log", type=str, default=None, help="Optional tensorboard log directory")
   parser.add_argument("--save-path", type=str, default=None, help="Path to save the trained model")
@@ -65,7 +65,7 @@ def main() -> None:
 
   print(f"Making {len(make_env_fns)} environments")
 
-  vec_env = VecMonitor(DummyVecEnv(make_env_fns))
+  vec_env = VecMonitor(SubprocVecEnv(make_env_fns))
 
   is_lstm_policy = "lstm" in args.policy.lower()
   policy_kwargs = (
