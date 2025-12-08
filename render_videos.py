@@ -2,9 +2,7 @@ import os
 import time
 import argparse
 from typing import List
-
-# Force a GL backend that works on macOS (avoid EGL)
-os.environ["MUJOCO_GL"] = "glfw"
+from dotenv import load_dotenv
 
 import numpy as np
 import imageio
@@ -17,6 +15,8 @@ from myosuite.utils import gym
 
 # Use the same SARL action wrapper as in training
 from SAR.SynergyWrapper import SynNoSynWrapper
+
+load_dotenv()
 
 
 def render_episode(
