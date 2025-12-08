@@ -11,7 +11,7 @@ from typing import Callable
 
 import time
 
-from stable_baselines3 import PPO
+from sb3_contrib import RecurrentPPO
 from stable_baselines3.common.callbacks import CheckpointCallback
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
@@ -24,8 +24,6 @@ from myosuite.utils import gym
 
 
 from SAR.SynergyWrapper import SynNoSynWrapper
-
-
 
 def make_env(env_id: str, seed: int, log_dir: str, ica, pca, scaler, phi) -> Callable[[], Monitor]:
   def _init():
@@ -56,25 +54,27 @@ def resolve_checkpoint_path(checkpoint_target: str) -> str:
 
 
 def parse_args() -> argparse.Namespace:
-  parser = argparse.ArgumentParser(description="PPO SARL trainer for Table Tennis")
+  parser = argparse.ArgumentParser(description="PPO LSTM SARL trainer for Table Tennis")
   parser.add_argument("--env-id", type=str, default="myoChallengeTableTennisP1-v0", help="Gymnasium environment ID")
   parser.add_argument("--total-timesteps", type=int, default=20000000, help="Total PPO training timesteps")
-  parser.add_argument("--log-dir", type=str, default=os.path.join("runs", "ppo_sarl_tabletennis"), help="Log directory")
+  parser.add_argument("--log-dir", type=str, default=os.path.join("runs", "ppo_lstm_sarl_tabletennis"), help="Log directory")
   parser.add_argument("--sar-dir", type=str, default="SAR", help="Directory containing SAR artifacts (ica.pkl, pca.pkl, scaler.pkl)")
   parser.add_argument("--seed", type=int, default=0, help="Random seed")
-  parser.add_argument("--num-envs", type=int, default=4, help="Number of parallel environments")
-  parser.add_argument("--policy", type=str, default="MlpPolicy", help="Stable-Baselines3 policy (MlpPolicy only)")
+  parser.add_argument("--num-envs", type=int, default=2, help="Number of parallel environments")
+  parser.add_argument("--policy", type=str, default="MlpLstmPolicy", help="Stable-Baselines3 policy (Recurrent)")
   parser.add_argument("--tensorboard-log", type=str, default=None, help="Optional tensorboard log directory")
   parser.add_argument("--checkpoint-freq", type=int, default=2500000, help="How many timesteps between checkpoints")
-  parser.add_argument("--wandb-project", type=str, default="myosuite-ppo-sarl", help="Optional W&B project to log metrics to")
+  parser.add_argument("--wandb-project", type=str, default="myosuite-ppo-lstm-sarl", help="Optional W&B project to log metrics to")
   parser.add_argument(
     "--save-path",
     type=str,
     default=None,
-    help="Optional path to save the final model (defaults to log dir + ppo_sarl_tabletennis)",
+    help="Optional path to save the final model (defaults to log dir + ppo_lstm_sarl_tabletennis)",
   )
   parser.add_argument("--render-steps", type=int, default=0, help="Record a video every this many timesteps (0 disables)")
   parser.add_argument("--rollout-steps", type=int, default=500, help="Steps per saved rollout")
+  parser.add_argument("--lstm-hidden-size", type=int, default=256, help="Hidden state size for LSTM policies")
+  parser.add_argument("--n-lstm-layers", type=int, default=1, help="Number of stacked LSTM layers")
   parser.add_argument(
     "--resume-from-checkpoint",
     type=str,
@@ -86,10 +86,12 @@ def parse_args() -> argparse.Namespace:
   parser.add_argument("--eval-episodes", type=int, default=10, help="Total eval episodes per evaluation run")
   return parser.parse_args()
 
+
 def main() -> None:
   args = parse_args()
 
-  run_id = f"run-ppo-sarl-{time.strftime('%Y%m%d-%H%M%S')}"
+  run_id = f"run-ppo-lstm-sarl-{time.strftime('%Y%m%d-%H%M%S')}"
+
 
   log_dir = os.path.abspath(os.path.join(args.log_dir, run_id))
   os.makedirs(log_dir, exist_ok=True)
@@ -126,6 +128,11 @@ def main() -> None:
   base_env = gym.make(args.env_id)
   metrics_env = base_env.unwrapped
 
+  policy_kwargs = {
+    "lstm_hidden_size": args.lstm_hidden_size,
+    "n_lstm_layers": args.n_lstm_layers,
+  }
+
   checkpoint_save_freq = max(1, args.checkpoint_freq // args.num_envs)
   checkpoint_timesteps = checkpoint_save_freq * args.num_envs
   print(f"Saving checkpoints every {checkpoint_save_freq} env.step() calls (~{checkpoint_timesteps} timesteps)")
@@ -133,23 +140,24 @@ def main() -> None:
   model = None
   if args.resume_from_checkpoint:
     checkpoint_path = resolve_checkpoint_path(args.resume_from_checkpoint)
-    print(f"Resuming PPO from checkpoint: {checkpoint_path}")
-    model = PPO.load(checkpoint_path, env=vec_env)
+    print(f"Resuming RecurrentPPO from checkpoint: {checkpoint_path}")
+    model = RecurrentPPO.load(checkpoint_path, env=vec_env)
   else:
-    model = PPO(
+    model = RecurrentPPO(
       policy=args.policy,
       env=vec_env,
       # n_steps=4096,
       verbose=1,
       seed=args.seed,
       tensorboard_log=os.path.abspath(args.tensorboard_log) if args.tensorboard_log else None,
+      policy_kwargs=policy_kwargs,
     )
 
   callbacks = [
     CheckpointCallback(
       save_freq=checkpoint_save_freq,
       save_path=checkpoint_dir,
-      name_prefix="ppo_sarl",
+      name_prefix="ppo_lstm_sarl",
     )
   ]
   wandb_module = None
@@ -197,14 +205,14 @@ def main() -> None:
   try:
     model.learn(total_timesteps=args.total_timesteps, callback=callbacks)
   finally:
-    final_save_path = args.save_path or os.path.join(log_dir, "ppo_sarl_tabletennis")
+    final_save_path = args.save_path or os.path.join(log_dir, "ppo_lstm_sarl_tabletennis")
     model.save(final_save_path)
     # SubprocVecEnv can raise EOFError on close if a worker died earlier.
     try:
       vec_env.close()
     except EOFError:
       print("Warning: VecEnv worker already terminated (EOFError on close).")
-    
+
     try:
       eval_vec_env.close()
     except EOFError:
