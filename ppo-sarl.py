@@ -92,41 +92,41 @@ def parse_args() -> argparse.Namespace:
   return parser.parse_args()
 
 def main() -> None:
-    args = parse_args()
+  args = parse_args()
 
   run_id = f"run-ppo-sarl-{time.strftime('%Y%m%d-%H%M%S')}"
 
-    log_dir = os.path.abspath(os.path.join(args.log_dir, run_id))
-    os.makedirs(log_dir, exist_ok=True)
+  log_dir = os.path.abspath(os.path.join(args.log_dir, run_id))
+  os.makedirs(log_dir, exist_ok=True)
 
-    checkpoint_dir = os.path.abspath(os.path.join(log_dir, "checkpoints"))
-    os.makedirs(checkpoint_dir, exist_ok=True)
-    video_dir = os.path.abspath(os.path.join(log_dir, "videos"))
+  checkpoint_dir = os.path.abspath(os.path.join(log_dir, "checkpoints"))
+  os.makedirs(checkpoint_dir, exist_ok=True)
+  video_dir = os.path.abspath(os.path.join(log_dir, "videos"))
 
-    # Load SAR artifacts
-    print(f"Loading SAR artifacts from {args.sar_dir}...")
-    ica = joblib.load(os.path.join(args.sar_dir, "ica.pkl"))
-    pca = joblib.load(os.path.join(args.sar_dir, "pca.pkl"))
-    scaler = joblib.load(os.path.join(args.sar_dir, "scaler.pkl"))
-    phi = 0.8
-    print("SAR artifacts loaded.")
+  # Load SAR artifacts
+  print(f"Loading SAR artifacts from {args.sar_dir}...")
+  ica = joblib.load(os.path.join(args.sar_dir, "ica.pkl"))
+  pca = joblib.load(os.path.join(args.sar_dir, "pca.pkl"))
+  scaler = joblib.load(os.path.join(args.sar_dir, "scaler.pkl"))
+  phi = 0.8
+  print("SAR artifacts loaded.")
 
-    make_env_fns = [
-        make_env(
-            env_id=args.env_id,
-            seed=args.seed + idx,
-            log_dir=log_dir,
-            ica=ica,
-            pca=pca,
-            scaler=scaler,
-            phi=phi,
-        )
-        for idx in range(args.num_envs)
-    ]
+  make_env_fns = [
+      make_env(
+          env_id=args.env_id,
+          seed=args.seed + idx,
+          log_dir=log_dir,
+          ica=ica,
+          pca=pca,
+          scaler=scaler,
+          phi=phi,
+      )
+      for idx in range(args.num_envs)
+  ]
 
-    print(f"Making {len(make_env_fns)} environments")
+  print(f"Making {len(make_env_fns)} environments")
 
-    vec_env = VecMonitor(SubprocVecEnv(make_env_fns))
+  vec_env = VecMonitor(SubprocVecEnv(make_env_fns))
 
   # Create Eval Envs
   make_eval_env_fns = [
@@ -139,11 +139,11 @@ def main() -> None:
   base_env = gym.make(args.env_id)
   metrics_env = base_env.unwrapped
 
-    checkpoint_save_freq = max(1, args.checkpoint_freq // args.num_envs)
-    checkpoint_timesteps = checkpoint_save_freq * args.num_envs
-    print(
-        f"Saving checkpoints every {checkpoint_save_freq} env.step() calls (~{checkpoint_timesteps} timesteps)"
-    )
+  checkpoint_save_freq = max(1, args.checkpoint_freq // args.num_envs)
+  checkpoint_timesteps = checkpoint_save_freq * args.num_envs
+  print(
+      f"Saving checkpoints every {checkpoint_save_freq} env.step() calls (~{checkpoint_timesteps} timesteps)"
+  )
 
   model = None
   if args.resume_from_checkpoint:
@@ -198,16 +198,16 @@ def main() -> None:
       env = SynNoSynWrapper(env, ica, pca, scaler, phi)
       return Monitor(env, filename=render_monitor_file)
 
-        callbacks.append(
-            PeriodicVideoRecorder(
-                video_dir=video_dir,
-                env_id=args.env_id,
-                record_every_steps=args.render_steps,
-                rollout_steps=args.rollout_steps,
-                wrap_env_fn=_wrap_env_for_rendering,
-                verbose=1,
-            )
-        )
+    callbacks.append(
+      PeriodicVideoRecorder(
+        video_dir=video_dir,
+        env_id=args.env_id,
+        record_every_steps=args.render_steps,
+        rollout_steps=args.rollout_steps,
+        wrap_env_fn=_wrap_env_for_rendering,
+        verbose=1,
+      )
+    )
 
   try:
     model.learn(total_timesteps=args.total_timesteps, callback=callbacks)
