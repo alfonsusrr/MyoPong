@@ -160,25 +160,25 @@ def main() -> None:
       tensorboard_log=os.path.abspath(args.tensorboard_log) if args.tensorboard_log else None,
     )
 
-    callbacks = [
-        CheckpointCallback(
-            save_freq=checkpoint_save_freq,
-            save_path=checkpoint_dir,
-            name_prefix="ppo_sarl",
-        )
-    ]
-    wandb_module = None
+  callbacks = [
+      CheckpointCallback(
+          save_freq=checkpoint_save_freq,
+          save_path=checkpoint_dir,
+          name_prefix="ppo_sarl",
+      )
+  ]
+  wandb_module = None
 
-    if args.wandb_project:
-        import wandb as _wandb
+  if args.wandb_project:
+      import wandb as _wandb
 
-        wandb_module = _wandb
-        wandb_module.init(
-            project=args.wandb_project,
-            name=run_id,
-            config=vars(args),
-        )
-        callbacks.append(WandbCallback())
+      wandb_module = _wandb
+      wandb_module.init(
+          project=args.wandb_project,
+          name=run_id,
+          config=vars(args),
+      )
+      callbacks.append(WandbCallback())
 
   callbacks.append(PeriodicEvaluator(
       eval_vec=eval_vec_env,
