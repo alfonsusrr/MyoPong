@@ -10,3 +10,5 @@ __pycache__/
 *.h5
 *.csv
 *.npy
+logs/
+videos/
