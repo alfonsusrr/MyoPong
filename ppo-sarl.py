@@ -1,5 +1,6 @@
 import argparse
 import os
+import joblib
 from pathlib import Path
 from typing import Callable
 
@@ -14,15 +15,19 @@ from modules.callback.renderer import PeriodicVideoRecorder
 from modules.callback.wandb import WandbCallback
 from myosuite.utils import gym
 
+
+from SAR.SynergyWrapper import SynNoSynWrapper
+
 # supress warning
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="gymnasium")
 
 
-def make_env(env_id: str, seed: int, log_dir: str) -> Callable[[], Monitor]:
+def make_env(env_id: str, seed: int, log_dir: str, ica, pca, scaler, phi) -> Callable[[], Monitor]:
   def _init():
     env = gym.make(env_id)
     env.seed(seed)
+    env = SynNoSynWrapper(env, ica, pca, scaler, phi)
     return Monitor(env, filename=os.path.join(log_dir, f"monitor_{seed}.csv"))
   return _init
 
@@ -47,21 +52,22 @@ def resolve_checkpoint_path(checkpoint_target: str) -> str:
 
 
 def parse_args() -> argparse.Namespace:
-  parser = argparse.ArgumentParser(description="Simple PPO trainer for Table Tennis")
+  parser = argparse.ArgumentParser(description="PPO SARL trainer for Table Tennis")
   parser.add_argument("--env-id", type=str, default="myoChallengeTableTennisP1-v0", help="Gymnasium environment ID")
   parser.add_argument("--total-timesteps", type=int, default=20000000, help="Total PPO training timesteps")
-  parser.add_argument("--log-dir", type=str, default=os.path.join("runs", "ppo_tabletennis"), help="Log directory")
+  parser.add_argument("--log-dir", type=str, default=os.path.join("runs", "ppo_sarl_tabletennis"), help="Log directory")
+  parser.add_argument("--sar-dir", type=str, default="SAR", help="Directory containing SAR artifacts (ica.pkl, pca.pkl, scaler.pkl)")
   parser.add_argument("--seed", type=int, default=0, help="Random seed")
   parser.add_argument("--num-envs", type=int, default=64, help="Number of parallel environments")
   parser.add_argument("--policy", type=str, default="MlpPolicy", help="Stable-Baselines3 policy")
   parser.add_argument("--tensorboard-log", type=str, default=None, help="Optional tensorboard log directory")
-  parser.add_argument("--checkpoint-freq", type=int, default=5000000, help="How many timesteps between checkpoints")
-  parser.add_argument("--wandb-project", type=str, default="myosuite-ppo", help="Optional W&B project to log metrics to")
+  parser.add_argument("--checkpoint-freq", type=int, default=2500000, help="How many timesteps between checkpoints")
+  parser.add_argument("--wandb-project", type=str, default="myosuite-ppo-sarl", help="Optional W&B project to log metrics to")
   parser.add_argument(
     "--save-path",
     type=str,
     default=None,
-    help="Optional path to save the final model (defaults to log dir + ppo_tabletennis)",
+    help="Optional path to save the final model (defaults to log dir + ppo_sarl_tabletennis)",
   )
   parser.add_argument("--render-steps", type=int, default=0, help="Record a video every this many timesteps (0 disables)")
   parser.add_argument("--rollout-steps", type=int, default=500, help="Steps per saved rollout")
@@ -79,7 +85,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
   args = parse_args()
 
-  run_id = f"run-ppo-{time.strftime('%Y%m%d-%H%M%S')}"
+  run_id = f"run-ppo-sarl-{time.strftime('%Y%m%d-%H%M%S')}"
 
 
   log_dir = os.path.abspath(os.path.join(args.log_dir, run_id))
@@ -88,9 +94,17 @@ def main() -> None:
   checkpoint_dir = os.path.abspath(os.path.join(log_dir, "checkpoints"))
   os.makedirs(checkpoint_dir, exist_ok=True)
   video_dir = os.path.abspath(os.path.join(log_dir, "videos"))
+  
+  # Load SAR artifacts
+  print(f"Loading SAR artifacts from {args.sar_dir}...")
+  ica = joblib.load(os.path.join(args.sar_dir, 'ica.pkl'))
+  pca = joblib.load(os.path.join(args.sar_dir, 'pca.pkl'))
+  scaler = joblib.load(os.path.join(args.sar_dir, 'scaler.pkl'))
+  phi = 0.8
+  print("SAR artifacts loaded.")
 
   make_env_fns = [
-    make_env(env_id=args.env_id, seed=args.seed + idx, log_dir=log_dir)
+    make_env(env_id=args.env_id, seed=args.seed + idx, log_dir=log_dir, ica=ica, pca=pca, scaler=scaler, phi=phi)
     for idx in range(args.num_envs)
   ]
 
@@ -132,7 +146,7 @@ def main() -> None:
     CheckpointCallback(
       save_freq=checkpoint_save_freq,
       save_path=checkpoint_dir,
-      name_prefix="ppo",
+      name_prefix="ppo_sarl",
     )
   ]
   wandb_module = None
@@ -153,6 +167,7 @@ def main() -> None:
     render_monitor_file = os.path.join(log_dir, "renderer_monitor.csv")
 
     def _wrap_env_for_rendering(env):
+      env = SynergyWrapper(env, ica, pca, scaler)
       return Monitor(env, filename=render_monitor_file)
 
     callbacks.append(
@@ -169,9 +184,13 @@ def main() -> None:
   try:
     model.learn(total_timesteps=args.total_timesteps, callback=callbacks)
   finally:
-    final_save_path = args.save_path or os.path.join(log_dir, "ppo_tabletennis")
+    final_save_path = args.save_path or os.path.join(log_dir, "ppo_sarl_tabletennis")
     model.save(final_save_path)
-    vec_env.close()
+    # SubprocVecEnv can raise EOFError on close if a worker died earlier.
+    try:
+      vec_env.close()
+    except EOFError:
+      print("Warning: VecEnv worker already terminated (EOFError on close).")
     print(f"Model saved to: {final_save_path}")
     if wandb_module is not None:
       wandb_module.finish()
