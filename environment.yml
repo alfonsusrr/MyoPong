@@ -6,11 +6,4 @@ dependencies:
   - python=3.10
   - pip
   - pip:
-    - stable-baselines3[extra]
-    - wandb
-    - myosuite
-    - gymnasium
-    - numpy
-    - mujoco-py
-    - joblib
-    - scikit-learn
+    - -r requirements.txt
