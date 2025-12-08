@@ -223,10 +223,21 @@ def main() -> None:
   )
 
   model = None
+  remaining_timesteps = args.total_timesteps
+  
   if args.resume_from_checkpoint:
     checkpoint_path = resolve_checkpoint_path(args.resume_from_checkpoint)
     print(f"Resuming PPO from checkpoint: {checkpoint_path}")
     model = PPO.load(checkpoint_path, env=vec_env)
+    
+    current_timesteps = model.num_timesteps
+    remaining_timesteps = args.total_timesteps - current_timesteps
+    
+    if remaining_timesteps <= 0:
+      print(f"Model already trained for {current_timesteps} steps (target: {args.total_timesteps}). Exiting training loop.")
+      remaining_timesteps = 0
+    else:
+      print(f"Resuming training for {remaining_timesteps} steps (to reach {args.total_timesteps})")
   else:
     model = PPO(
       policy=args.policy,
@@ -289,11 +300,14 @@ def main() -> None:
     )
 
   try:
-    model.learn(
-      total_timesteps=args.total_timesteps,
-      callback=callbacks,
-      reset_num_timesteps=not bool(args.resume_from_checkpoint),
-    )
+    if remaining_timesteps > 0:
+      model.learn(
+        total_timesteps=remaining_timesteps,
+        callback=callbacks,
+        reset_num_timesteps=not bool(args.resume_from_checkpoint),
+      )
+    else:
+      print("Skipping training as target timesteps reached.")
   finally:
     final_save_path = args.save_path or os.path.join(log_dir, "ppo_sarl_tabletennis")
     model.save(final_save_path)
