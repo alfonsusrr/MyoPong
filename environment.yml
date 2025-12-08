@@ -14,3 +14,5 @@ dependencies:
     - mujoco-py
     - joblib
     - scikit-learn
+    - sb3_contrib
+    - imageio-ffmpeg
