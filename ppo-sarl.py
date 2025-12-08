@@ -23,36 +23,41 @@ from modules.callback.progress import TqdmProgressCallback
 from myosuite.utils import gym
 
 
-from SAR.SynergyWrapper import SynNoSynWrapper
+from SAR.SynergyWrapper import SynNoSynWrapper, SynergyWrapper
 
 
 
-def make_env(env_id: str, seed: int, log_dir: str, ica, pca, scaler, phi) -> Callable[[], Monitor]:
-  def _init():
-    env = gym.make(env_id)
-    env.seed(seed)
-    env = SynNoSynWrapper(env, ica, pca, scaler, phi)
-    return Monitor(env, filename=os.path.join(log_dir, f"monitor_{seed}.csv"))
-  return _init
+def make_env(
+    env_id: str, seed: int, log_dir: str, ica, pca, scaler, phi
+) -> Callable[[], Monitor]:
+    def _init():
+        env = gym.make(env_id)
+        env.seed(seed)
+        env = SynNoSynWrapper(env, ica, pca, scaler, phi)
+        return Monitor(env, filename=os.path.join(log_dir, f"monitor_{seed}.csv"))
+
+    return _init
 
 
 def resolve_checkpoint_path(checkpoint_target: str) -> str:
-  target = Path(checkpoint_target).expanduser().resolve()
-  if target.is_dir():
-    checkpoints = sorted(target.glob("*.zip"), key=lambda path: path.stat().st_mtime)
-    if not checkpoints:
-      raise FileNotFoundError(f"No checkpoint archives found in {target}")
-    return str(checkpoints[-1])
+    target = Path(checkpoint_target).expanduser().resolve()
+    if target.is_dir():
+        checkpoints = sorted(
+            target.glob("*.zip"), key=lambda path: path.stat().st_mtime
+        )
+        if not checkpoints:
+            raise FileNotFoundError(f"No checkpoint archives found in {target}")
+        return str(checkpoints[-1])
 
-  if target.is_file():
-    return str(target)
+    if target.is_file():
+        return str(target)
 
-  if target.suffix != ".zip":
-    zipped_candidate = target.with_suffix(".zip")
-    if zipped_candidate.is_file():
-      return str(zipped_candidate)
+    if target.suffix != ".zip":
+        zipped_candidate = target.with_suffix(".zip")
+        if zipped_candidate.is_file():
+            return str(zipped_candidate)
 
-  raise FileNotFoundError(f"Checkpoint path {checkpoint_target} does not exist")
+    raise FileNotFoundError(f"Checkpoint path {checkpoint_target} does not exist")
 
 
 def parse_args() -> argparse.Namespace:
@@ -87,33 +92,41 @@ def parse_args() -> argparse.Namespace:
   return parser.parse_args()
 
 def main() -> None:
-  args = parse_args()
+    args = parse_args()
 
   run_id = f"run-ppo-sarl-{time.strftime('%Y%m%d-%H%M%S')}"
 
-  log_dir = os.path.abspath(os.path.join(args.log_dir, run_id))
-  os.makedirs(log_dir, exist_ok=True)
+    log_dir = os.path.abspath(os.path.join(args.log_dir, run_id))
+    os.makedirs(log_dir, exist_ok=True)
 
-  checkpoint_dir = os.path.abspath(os.path.join(log_dir, "checkpoints"))
-  os.makedirs(checkpoint_dir, exist_ok=True)
-  video_dir = os.path.abspath(os.path.join(log_dir, "videos"))
-  
-  # Load SAR artifacts
-  print(f"Loading SAR artifacts from {args.sar_dir}...")
-  ica = joblib.load(os.path.join(args.sar_dir, 'ica.pkl'))
-  pca = joblib.load(os.path.join(args.sar_dir, 'pca.pkl'))
-  scaler = joblib.load(os.path.join(args.sar_dir, 'scaler.pkl'))
-  phi = 0.8
-  print("SAR artifacts loaded.")
+    checkpoint_dir = os.path.abspath(os.path.join(log_dir, "checkpoints"))
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    video_dir = os.path.abspath(os.path.join(log_dir, "videos"))
 
-  make_env_fns = [
-    make_env(env_id=args.env_id, seed=args.seed + idx, log_dir=log_dir, ica=ica, pca=pca, scaler=scaler, phi=phi)
-    for idx in range(args.num_envs)
-  ]
+    # Load SAR artifacts
+    print(f"Loading SAR artifacts from {args.sar_dir}...")
+    ica = joblib.load(os.path.join(args.sar_dir, "ica.pkl"))
+    pca = joblib.load(os.path.join(args.sar_dir, "pca.pkl"))
+    scaler = joblib.load(os.path.join(args.sar_dir, "scaler.pkl"))
+    phi = 0.8
+    print("SAR artifacts loaded.")
 
-  print(f"Making {len(make_env_fns)} environments")
+    make_env_fns = [
+        make_env(
+            env_id=args.env_id,
+            seed=args.seed + idx,
+            log_dir=log_dir,
+            ica=ica,
+            pca=pca,
+            scaler=scaler,
+            phi=phi,
+        )
+        for idx in range(args.num_envs)
+    ]
 
-  vec_env = VecMonitor(SubprocVecEnv(make_env_fns))
+    print(f"Making {len(make_env_fns)} environments")
+
+    vec_env = VecMonitor(SubprocVecEnv(make_env_fns))
 
   # Create Eval Envs
   make_eval_env_fns = [
@@ -126,9 +139,11 @@ def main() -> None:
   base_env = gym.make(args.env_id)
   metrics_env = base_env.unwrapped
 
-  checkpoint_save_freq = max(1, args.checkpoint_freq // args.num_envs)
-  checkpoint_timesteps = checkpoint_save_freq * args.num_envs
-  print(f"Saving checkpoints every {checkpoint_save_freq} env.step() calls (~{checkpoint_timesteps} timesteps)")
+    checkpoint_save_freq = max(1, args.checkpoint_freq // args.num_envs)
+    checkpoint_timesteps = checkpoint_save_freq * args.num_envs
+    print(
+        f"Saving checkpoints every {checkpoint_save_freq} env.step() calls (~{checkpoint_timesteps} timesteps)"
+    )
 
   model = None
   if args.resume_from_checkpoint:
@@ -145,25 +160,25 @@ def main() -> None:
       tensorboard_log=os.path.abspath(args.tensorboard_log) if args.tensorboard_log else None,
     )
 
-  callbacks = [
-    CheckpointCallback(
-      save_freq=checkpoint_save_freq,
-      save_path=checkpoint_dir,
-      name_prefix="ppo_sarl",
-    )
-  ]
-  wandb_module = None
+    callbacks = [
+        CheckpointCallback(
+            save_freq=checkpoint_save_freq,
+            save_path=checkpoint_dir,
+            name_prefix="ppo_sarl",
+        )
+    ]
+    wandb_module = None
 
-  if args.wandb_project:
-    import wandb as _wandb
+    if args.wandb_project:
+        import wandb as _wandb
 
-    wandb_module = _wandb
-    wandb_module.init(
-      project=args.wandb_project,
-      name=run_id,
-      config=vars(args),
-    )
-    callbacks.append(WandbCallback())
+        wandb_module = _wandb
+        wandb_module.init(
+            project=args.wandb_project,
+            name=run_id,
+            config=vars(args),
+        )
+        callbacks.append(WandbCallback())
 
   callbacks.append(PeriodicEvaluator(
       eval_vec=eval_vec_env,
@@ -183,16 +198,16 @@ def main() -> None:
       env = SynNoSynWrapper(env, ica, pca, scaler, phi)
       return Monitor(env, filename=render_monitor_file)
 
-    callbacks.append(
-      PeriodicVideoRecorder(
-        video_dir=video_dir,
-        env_id=args.env_id,
-        record_every_steps=args.render_steps,
-        rollout_steps=args.rollout_steps,
-        wrap_env_fn=_wrap_env_for_rendering,
-        verbose=1,
-      )
-    )
+        callbacks.append(
+            PeriodicVideoRecorder(
+                video_dir=video_dir,
+                env_id=args.env_id,
+                record_every_steps=args.render_steps,
+                rollout_steps=args.rollout_steps,
+                wrap_env_fn=_wrap_env_for_rendering,
+                verbose=1,
+            )
+        )
 
   try:
     model.learn(total_timesteps=args.total_timesteps, callback=callbacks)
@@ -221,5 +236,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-  main()
-
+    main()
