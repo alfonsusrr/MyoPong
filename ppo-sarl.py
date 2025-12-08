@@ -16,186 +16,257 @@ from modules.callback.wandb import WandbCallback
 from myosuite.utils import gym
 
 
-from SAR.SynergyWrapper import SynNoSynWrapper
+from SAR.SynergyWrapper import SynNoSynWrapper, SynergyWrapper
 
 # supress warning
 import warnings
+
 warnings.filterwarnings("ignore", category=UserWarning, module="gymnasium")
 
 
-def make_env(env_id: str, seed: int, log_dir: str, ica, pca, scaler, phi) -> Callable[[], Monitor]:
-  def _init():
-    env = gym.make(env_id)
-    env.seed(seed)
-    env = SynNoSynWrapper(env, ica, pca, scaler, phi)
-    return Monitor(env, filename=os.path.join(log_dir, f"monitor_{seed}.csv"))
-  return _init
+def make_env(
+    env_id: str, seed: int, log_dir: str, ica, pca, scaler, phi
+) -> Callable[[], Monitor]:
+    def _init():
+        env = gym.make(env_id)
+        env.seed(seed)
+        env = SynNoSynWrapper(env, ica, pca, scaler, phi)
+        return Monitor(env, filename=os.path.join(log_dir, f"monitor_{seed}.csv"))
+
+    return _init
 
 
 def resolve_checkpoint_path(checkpoint_target: str) -> str:
-  target = Path(checkpoint_target).expanduser().resolve()
-  if target.is_dir():
-    checkpoints = sorted(target.glob("*.zip"), key=lambda path: path.stat().st_mtime)
-    if not checkpoints:
-      raise FileNotFoundError(f"No checkpoint archives found in {target}")
-    return str(checkpoints[-1])
+    target = Path(checkpoint_target).expanduser().resolve()
+    if target.is_dir():
+        checkpoints = sorted(
+            target.glob("*.zip"), key=lambda path: path.stat().st_mtime
+        )
+        if not checkpoints:
+            raise FileNotFoundError(f"No checkpoint archives found in {target}")
+        return str(checkpoints[-1])
 
-  if target.is_file():
-    return str(target)
+    if target.is_file():
+        return str(target)
 
-  if target.suffix != ".zip":
-    zipped_candidate = target.with_suffix(".zip")
-    if zipped_candidate.is_file():
-      return str(zipped_candidate)
+    if target.suffix != ".zip":
+        zipped_candidate = target.with_suffix(".zip")
+        if zipped_candidate.is_file():
+            return str(zipped_candidate)
 
-  raise FileNotFoundError(f"Checkpoint path {checkpoint_target} does not exist")
+    raise FileNotFoundError(f"Checkpoint path {checkpoint_target} does not exist")
 
 
 def parse_args() -> argparse.Namespace:
-  parser = argparse.ArgumentParser(description="PPO SARL trainer for Table Tennis")
-  parser.add_argument("--env-id", type=str, default="myoChallengeTableTennisP1-v0", help="Gymnasium environment ID")
-  parser.add_argument("--total-timesteps", type=int, default=20000000, help="Total PPO training timesteps")
-  parser.add_argument("--log-dir", type=str, default=os.path.join("runs", "ppo_sarl_tabletennis"), help="Log directory")
-  parser.add_argument("--sar-dir", type=str, default="SAR", help="Directory containing SAR artifacts (ica.pkl, pca.pkl, scaler.pkl)")
-  parser.add_argument("--seed", type=int, default=0, help="Random seed")
-  parser.add_argument("--num-envs", type=int, default=64, help="Number of parallel environments")
-  parser.add_argument("--policy", type=str, default="MlpPolicy", help="Stable-Baselines3 policy")
-  parser.add_argument("--tensorboard-log", type=str, default=None, help="Optional tensorboard log directory")
-  parser.add_argument("--checkpoint-freq", type=int, default=2500000, help="How many timesteps between checkpoints")
-  parser.add_argument("--wandb-project", type=str, default="myosuite-ppo-sarl", help="Optional W&B project to log metrics to")
-  parser.add_argument(
-    "--save-path",
-    type=str,
-    default=None,
-    help="Optional path to save the final model (defaults to log dir + ppo_sarl_tabletennis)",
-  )
-  parser.add_argument("--render-steps", type=int, default=0, help="Record a video every this many timesteps (0 disables)")
-  parser.add_argument("--rollout-steps", type=int, default=500, help="Steps per saved rollout")
-  parser.add_argument("--lstm-hidden-size", type=int, default=256, help="Hidden state size for LSTM policies")
-  parser.add_argument("--n-lstm-layers", type=int, default=1, help="Number of stacked LSTM layers")
-  parser.add_argument(
-    "--resume-from-checkpoint",
-    type=str,
-    default=None,
-    help="Path to a checkpoint (file or directory) to resume training from",
-  )
-  return parser.parse_args()
+    parser = argparse.ArgumentParser(description="PPO SARL trainer for Table Tennis")
+    parser.add_argument(
+        "--env-id",
+        type=str,
+        default="myoChallengeTableTennisP1-v0",
+        help="Gymnasium environment ID",
+    )
+    parser.add_argument(
+        "--total-timesteps",
+        type=int,
+        default=20000000,
+        help="Total PPO training timesteps",
+    )
+    parser.add_argument(
+        "--log-dir",
+        type=str,
+        default=os.path.join("runs", "ppo_sarl_tabletennis"),
+        help="Log directory",
+    )
+    parser.add_argument(
+        "--sar-dir",
+        type=str,
+        default="SAR",
+        help="Directory containing SAR artifacts (ica.pkl, pca.pkl, scaler.pkl)",
+    )
+    parser.add_argument("--seed", type=int, default=0, help="Random seed")
+    parser.add_argument(
+        "--num-envs", type=int, default=64, help="Number of parallel environments"
+    )
+    parser.add_argument(
+        "--policy", type=str, default="MlpPolicy", help="Stable-Baselines3 policy"
+    )
+    parser.add_argument(
+        "--tensorboard-log",
+        type=str,
+        default=None,
+        help="Optional tensorboard log directory",
+    )
+    parser.add_argument(
+        "--checkpoint-freq",
+        type=int,
+        default=2500000,
+        help="How many timesteps between checkpoints",
+    )
+    parser.add_argument(
+        "--wandb-project",
+        type=str,
+        default="myosuite-ppo-sarl",
+        help="Optional W&B project to log metrics to",
+    )
+    parser.add_argument(
+        "--save-path",
+        type=str,
+        default=None,
+        help="Optional path to save the final model (defaults to log dir + ppo_sarl_tabletennis)",
+    )
+    parser.add_argument(
+        "--render-steps",
+        type=int,
+        default=0,
+        help="Record a video every this many timesteps (0 disables)",
+    )
+    parser.add_argument(
+        "--rollout-steps", type=int, default=500, help="Steps per saved rollout"
+    )
+    parser.add_argument(
+        "--lstm-hidden-size",
+        type=int,
+        default=256,
+        help="Hidden state size for LSTM policies",
+    )
+    parser.add_argument(
+        "--n-lstm-layers", type=int, default=1, help="Number of stacked LSTM layers"
+    )
+    parser.add_argument(
+        "--resume-from-checkpoint",
+        type=str,
+        default=None,
+        help="Path to a checkpoint (file or directory) to resume training from",
+    )
+    return parser.parse_args()
 
 
 def main() -> None:
-  args = parse_args()
+    args = parse_args()
 
-  run_id = f"run-ppo-sarl-{time.strftime('%Y%m%d-%H%M%S')}"
+    run_id = f"run-ppo-sarl-{time.strftime('%Y%m%d-%H%M%S')}"
 
+    log_dir = os.path.abspath(os.path.join(args.log_dir, run_id))
+    os.makedirs(log_dir, exist_ok=True)
 
-  log_dir = os.path.abspath(os.path.join(args.log_dir, run_id))
-  os.makedirs(log_dir, exist_ok=True)
+    checkpoint_dir = os.path.abspath(os.path.join(log_dir, "checkpoints"))
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    video_dir = os.path.abspath(os.path.join(log_dir, "videos"))
 
-  checkpoint_dir = os.path.abspath(os.path.join(log_dir, "checkpoints"))
-  os.makedirs(checkpoint_dir, exist_ok=True)
-  video_dir = os.path.abspath(os.path.join(log_dir, "videos"))
-  
-  # Load SAR artifacts
-  print(f"Loading SAR artifacts from {args.sar_dir}...")
-  ica = joblib.load(os.path.join(args.sar_dir, 'ica.pkl'))
-  pca = joblib.load(os.path.join(args.sar_dir, 'pca.pkl'))
-  scaler = joblib.load(os.path.join(args.sar_dir, 'scaler.pkl'))
-  phi = 0.8
-  print("SAR artifacts loaded.")
+    # Load SAR artifacts
+    print(f"Loading SAR artifacts from {args.sar_dir}...")
+    ica = joblib.load(os.path.join(args.sar_dir, "ica.pkl"))
+    pca = joblib.load(os.path.join(args.sar_dir, "pca.pkl"))
+    scaler = joblib.load(os.path.join(args.sar_dir, "scaler.pkl"))
+    phi = 0.8
+    print("SAR artifacts loaded.")
 
-  make_env_fns = [
-    make_env(env_id=args.env_id, seed=args.seed + idx, log_dir=log_dir, ica=ica, pca=pca, scaler=scaler, phi=phi)
-    for idx in range(args.num_envs)
-  ]
+    make_env_fns = [
+        make_env(
+            env_id=args.env_id,
+            seed=args.seed + idx,
+            log_dir=log_dir,
+            ica=ica,
+            pca=pca,
+            scaler=scaler,
+            phi=phi,
+        )
+        for idx in range(args.num_envs)
+    ]
 
-  print(f"Making {len(make_env_fns)} environments")
+    print(f"Making {len(make_env_fns)} environments")
 
-  vec_env = VecMonitor(SubprocVecEnv(make_env_fns))
+    vec_env = VecMonitor(SubprocVecEnv(make_env_fns))
 
-  is_lstm_policy = "lstm" in args.policy.lower()
-  policy_kwargs = (
-    {
-      "lstm_hidden_size": args.lstm_hidden_size,
-      "n_lstm_layers": args.n_lstm_layers,
-    }
-    if is_lstm_policy
-    else None
-  )
-
-  checkpoint_save_freq = max(1, args.checkpoint_freq // args.num_envs)
-  checkpoint_timesteps = checkpoint_save_freq * args.num_envs
-  print(f"Saving checkpoints every {checkpoint_save_freq} env.step() calls (~{checkpoint_timesteps} timesteps)")
-
-  model = None
-  if args.resume_from_checkpoint:
-    checkpoint_path = resolve_checkpoint_path(args.resume_from_checkpoint)
-    print(f"Resuming PPO from checkpoint: {checkpoint_path}")
-    model = PPO.load(checkpoint_path, env=vec_env)
-  else:
-    model = PPO(
-      policy=args.policy,
-      env=vec_env,
-      # n_steps=4096,
-      verbose=1,
-      seed=args.seed,
-      tensorboard_log=os.path.abspath(args.tensorboard_log) if args.tensorboard_log else None,
-      policy_kwargs=policy_kwargs,
+    is_lstm_policy = "lstm" in args.policy.lower()
+    policy_kwargs = (
+        {
+            "lstm_hidden_size": args.lstm_hidden_size,
+            "n_lstm_layers": args.n_lstm_layers,
+        }
+        if is_lstm_policy
+        else None
     )
 
-  callbacks = [
-    CheckpointCallback(
-      save_freq=checkpoint_save_freq,
-      save_path=checkpoint_dir,
-      name_prefix="ppo_sarl",
-    )
-  ]
-  wandb_module = None
-
-  if args.wandb_project:
-    import wandb as _wandb
-
-    wandb_module = _wandb
-    wandb_module.init(
-      project=args.wandb_project,
-      name=run_id,
-      config=vars(args),
-    )
-    callbacks.append(WandbCallback())
-
-  if args.render_steps > 0:
-    os.makedirs(video_dir, exist_ok=True)
-    render_monitor_file = os.path.join(log_dir, "renderer_monitor.csv")
-
-    def _wrap_env_for_rendering(env):
-      env = SynergyWrapper(env, ica, pca, scaler)
-      return Monitor(env, filename=render_monitor_file)
-
-    callbacks.append(
-      PeriodicVideoRecorder(
-        video_dir=video_dir,
-        env_id=args.env_id,
-        record_every_steps=args.render_steps,
-        rollout_steps=args.rollout_steps,
-        wrap_env_fn=_wrap_env_for_rendering,
-        verbose=1,
-      )
+    checkpoint_save_freq = max(1, args.checkpoint_freq // args.num_envs)
+    checkpoint_timesteps = checkpoint_save_freq * args.num_envs
+    print(
+        f"Saving checkpoints every {checkpoint_save_freq} env.step() calls (~{checkpoint_timesteps} timesteps)"
     )
 
-  try:
-    model.learn(total_timesteps=args.total_timesteps, callback=callbacks)
-  finally:
-    final_save_path = args.save_path or os.path.join(log_dir, "ppo_sarl_tabletennis")
-    model.save(final_save_path)
-    # SubprocVecEnv can raise EOFError on close if a worker died earlier.
+    model = None
+    if args.resume_from_checkpoint:
+        checkpoint_path = resolve_checkpoint_path(args.resume_from_checkpoint)
+        print(f"Resuming PPO from checkpoint: {checkpoint_path}")
+        model = PPO.load(checkpoint_path, env=vec_env)
+    else:
+        model = PPO(
+            policy=args.policy,
+            env=vec_env,
+            # n_steps=4096,
+            verbose=1,
+            seed=args.seed,
+            tensorboard_log=(
+                os.path.abspath(args.tensorboard_log) if args.tensorboard_log else None
+            ),
+            policy_kwargs=policy_kwargs,
+        )
+
+    callbacks = [
+        CheckpointCallback(
+            save_freq=checkpoint_save_freq,
+            save_path=checkpoint_dir,
+            name_prefix="ppo_sarl",
+        )
+    ]
+    wandb_module = None
+
+    if args.wandb_project:
+        import wandb as _wandb
+
+        wandb_module = _wandb
+        wandb_module.init(
+            project=args.wandb_project,
+            name=run_id,
+            config=vars(args),
+        )
+        callbacks.append(WandbCallback())
+
+    if args.render_steps > 0:
+        os.makedirs(video_dir, exist_ok=True)
+        render_monitor_file = os.path.join(log_dir, "renderer_monitor.csv")
+
+        def _wrap_env_for_rendering(env):
+            env = SynergyWrapper(env, ica, pca, scaler)
+            return Monitor(env, filename=render_monitor_file)
+
+        callbacks.append(
+            PeriodicVideoRecorder(
+                video_dir=video_dir,
+                env_id=args.env_id,
+                record_every_steps=args.render_steps,
+                rollout_steps=args.rollout_steps,
+                wrap_env_fn=_wrap_env_for_rendering,
+                verbose=1,
+            )
+        )
+
     try:
-      vec_env.close()
-    except EOFError:
-      print("Warning: VecEnv worker already terminated (EOFError on close).")
-    print(f"Model saved to: {final_save_path}")
-    if wandb_module is not None:
-      wandb_module.finish()
+        model.learn(total_timesteps=args.total_timesteps, callback=callbacks)
+    finally:
+        final_save_path = args.save_path or os.path.join(
+            log_dir, "ppo_sarl_tabletennis"
+        )
+        model.save(final_save_path)
+        # SubprocVecEnv can raise EOFError on close if a worker died earlier.
+        try:
+            vec_env.close()
+        except EOFError:
+            print("Warning: VecEnv worker already terminated (EOFError on close).")
+        print(f"Model saved to: {final_save_path}")
+        if wandb_module is not None:
+            wandb_module.finish()
 
 
 if __name__ == "__main__":
-  main()
-
+    main()

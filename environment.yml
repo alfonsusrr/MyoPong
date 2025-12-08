@@ -12,3 +12,5 @@ dependencies:
     - gymnasium
     - numpy
     - mujoco-py
+    - joblib
+    - scikit-learn
