@@ -210,7 +210,11 @@ def main() -> None:
     )
 
   try:
-    model.learn(total_timesteps=args.total_timesteps, callback=callbacks)
+    model.learn(
+      total_timesteps=args.total_timesteps,
+      callback=callbacks,
+      reset_num_timesteps=not bool(args.resume_from_checkpoint),
+    )
   finally:
     final_save_path = args.save_path or os.path.join(log_dir, "ppo_sarl_tabletennis")
     model.save(final_save_path)
