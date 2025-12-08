@@ -54,7 +54,7 @@ def resolve_checkpoint_path(checkpoint_target: str) -> str:
 def parse_args() -> argparse.Namespace:
   parser = argparse.ArgumentParser(description="PPO SARL trainer for Table Tennis")
   parser.add_argument("--env-id", type=str, default="myoChallengeTableTennisP1-v0", help="Gymnasium environment ID")
-  parser.add_argument("--total-timesteps", type=int, default=10000000, help="Total PPO training timesteps")
+  parser.add_argument("--total-timesteps", type=int, default=20000000, help="Total PPO training timesteps")
   parser.add_argument("--log-dir", type=str, default=os.path.join("runs", "ppo_sarl_tabletennis"), help="Log directory")
   parser.add_argument("--sar-dir", type=str, default="SAR", help="Directory containing SAR artifacts (ica.pkl, pca.pkl, scaler.pkl)")
   parser.add_argument("--seed", type=int, default=0, help="Random seed")
