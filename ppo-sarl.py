@@ -26,17 +26,17 @@ from myosuite.utils import gym
 from SAR.SynergyWrapper import SynNoSynWrapper
 
 def prepare_env(env_id: str, difficulty: int = 0) -> Any:
-  """Builds the table tennis env with tuning knobs exposed in TableTennisEnvV0.
+  """Builds the table tennis env aligned with MyoChallenge 2025 Phases.
   
-  Curriculum Levels (difficulty):
-    0: Default (No randomization, Default Rewards)
-    1: Simple ball position randomization
-    2: Moderate ball position + Velocity randomization
-    3: Harder ball position + Velocity + Paddle Mass + Custom Rewards (Finetuning)
-    4: Advanced (Friction, Noise, Wide Ranges) + Custom Rewards
+  Curriculum Levels:
+    0: Warmup - Fixed easy target (Center of Phase 1), Fixed Velocity.
+    1: Phase 1 - Full Phase 1 Range (Offset Y), Fixed Velocity.
+    2: Phase 2 Entry - Phase 1 Spatial Range + Random Velocity (Phase 2 requirement).
+    3: Phase 2 Expansion - Full Phase 2 Spatial Range + Random Velocity + Mass Randomization.
+    4: Phase 2 Mastery - Full Ranges + Friction/Dynamics Noise (The "Real" Challenge).
   """
   
-  # Default rewards from TableTennisEnvV0 (Good for initial learning)
+  # Default rewards (Dense shaping for initial learning)
   default_rewards = {
       "reach_dist": 1,
       "palm_dist": 1,
@@ -48,54 +48,96 @@ def prepare_env(env_id: str, difficulty: int = 0) -> Any:
       "done": -10
   }
   
-  # Finetuning rewards (User provided: Lower shaping, Higher solved reward)
+  # Finetuning rewards (Sparse focus for robustness)
   finetuning_rewards = {
       "reach_dist": 0.6,
       "palm_dist": 0.6,
       "paddle_quat": 1.5,
       "act_reg": 0.5,
-      "torso_up": 2.0, # Explicitly keeping this as it is in default but user list didn't have it
+      "torso_up": 2.0,
       "sparse": 50,
-      "solved": 1200,
+      "solved": 1200, 
       "done": -10,
   }
 
+  # --- Constants from Docs ---
+  # Phase 1 Pos: [-1.20, -0.45, 1.50] to [-1.25, -0.50, 1.40]
+  p1_low  = [-1.25, -0.50, 1.40]
+  p1_high = [-1.20, -0.45, 1.50]
+
+  # Phase 2 Pos: [-0.5, 0.50, 1.50] to [-1.25, -0.50, 1.40]
+  p2_low  = [-1.25, -0.50, 1.40]
+  p2_high = [-0.5,  0.50, 1.50]
+
+  # Friction Nominal: [1.0, 0.005, 0.0001]
+  # Variations: +/- [0.1, 0.001, 0.00002]
+  fric_nom = [1.0, 0.005, 0.0001]
+  fric_delta = [0.1, 0.001, 0.00002]
+  
+  fric_low = [n - d for n, d in zip(fric_nom, fric_delta)]
+  fric_high = [n + d for n, d in zip(fric_nom, fric_delta)]
+
   curriculum_levels = {
-      0: {
-          "weighted_reward_keys": default_rewards
-      },
-      1: {
-          "ball_xyz_range": {"low": [-1.0, -0.1, 1.34], "high": [-1.0, 0.1, 1.36]},
-          "ball_qvel": False,
-          "weighted_reward_keys": default_rewards
-      },
-      2: {
-          "ball_xyz_range": {"low": [-1.1, -0.2, 1.32], "high": [-0.9, 0.2, 1.38]},
-          "ball_qvel": True,
-          "weighted_reward_keys": default_rewards
-      },
-      3: {
-          "ball_xyz_range": {"low": [-1.1, -0.2, 1.32], "high": [-0.9, 0.2, 1.40]},
-          "ball_qvel": True,
-          "paddle_mass_range": (0.6, 1.1),
-          "weighted_reward_keys": finetuning_rewards
-      },
-      4: {
-          "ball_xyz_range": {"low": [-1.2, -0.3, 1.30], "high": [-0.8, 0.3, 1.42]},
-          "ball_qvel": True,
-          "paddle_mass_range": (0.5, 1.2),
-          "ball_friction_range": {"low": 0.2, "high": 0.4},
-          "qpos_noise_range": {"low": -0.02, "high": 0.02},
-          "weighted_reward_keys": finetuning_rewards
-      }
+    # Level 0: Warmup
+    # - Fixed Position (with tiny noise to break deterministic trap)
+    # - Calculated Velocity (Guaranteed to land on table)
+    0: {
+        "ball_xyz_range": {
+            "low":  [-1.225, -0.475, 1.45], 
+            "high": [-1.225, -0.475, 1.45]
+        },
+        "ball_qvel": True,
+        "weighted_reward_keys": default_rewards
+    },
+    
+    # Level 1: Phase 1 Box
+    # - Position: Phase 1 specific box
+    # - Velocity: Calculated (but consistent because position range is small)
+    1: {
+        "ball_xyz_range": {"low": p1_low, "high": p1_high},
+        "ball_qvel": True,
+        "weighted_reward_keys": default_rewards
+    },
+    
+    # Level 2: Phase 2 Box (Wider)
+    # - Position: Phase 2 full width
+    # - Velocity: Calculated (more variable now because pos is wider)
+    2: {
+        "ball_xyz_range": {"low": p2_low, "high": p2_high},
+        "ball_qvel": True,
+        "weighted_reward_keys": default_rewards
+    },
+
+    # Level 3: Phase 2 Spatial Expansion + Mass.
+    # Phase 2 Spatial Expansion
+    # Add Paddle Mass: 100g - 150g (0.1 - 0.15 kg)
+    3: {
+        "ball_xyz_range": {"low": p2_low, "high": p2_high},
+        "ball_qvel": True,
+        "paddle_mass_range": (0.1, 0.15), # CORRECTED UNITS (kg)
+        "weighted_reward_keys": finetuning_rewards
+    },
+
+    # Level 4: Full Phase 2 (Advanced).
+    # Full spatial, Full velocity, Full dynamics (Mass + Friction).
+    4: {
+        "ball_xyz_range": {"low": p2_low, "high": p2_high},
+        "ball_qvel": True,
+        "paddle_mass_range": (0.1, 0.15),
+        "ball_friction_range": {"low": fric_low, "high": fric_high},
+        "qpos_noise_range": {"low": -0.02, "high": 0.02}, # Keep your noise choice if helpful
+        "weighted_reward_keys": finetuning_rewards
+    }
   }
 
   kwargs = curriculum_levels.get(difficulty, {})
-  
+
   try:
     env = gym.make(env_id, **kwargs)
   except TypeError:
+    print(f"Warning: {env_id} did not accept kwargs. Creating default env.")
     env = gym.make(env_id)
+    
   return env
 
 def make_env(
