@@ -1,24 +1,20 @@
+from myosuite.utils import gym
+from modules.callback.progress import TqdmProgressCallback
+from modules.callback.evaluator import PeriodicEvaluator
+from modules.callback.wandb import WandbCallback
+from modules.callback.renderer import PeriodicVideoRecorder
+from stable_baselines3.common.vec_env import DummyVecEnv, VecMonitor
+from stable_baselines3.common.monitor import Monitor
+from stable_baselines3.common.callbacks import CheckpointCallback
+from stable_baselines3 import PPO
+import time
+from typing import Callable
+import os
+import argparse
 import warnings
 
 # supress all warnings
 warnings.filterwarnings("ignore")
-
-import argparse
-import os
-from typing import Callable
-
-import time
-
-from stable_baselines3 import PPO
-from stable_baselines3.common.callbacks import CheckpointCallback
-from stable_baselines3.common.monitor import Monitor
-from stable_baselines3.common.vec_env import DummyVecEnv, VecMonitor
-
-from modules.callback.renderer import PeriodicVideoRecorder
-from modules.callback.wandb import WandbCallback
-from modules.callback.evaluator import PeriodicEvaluator
-from modules.callback.progress import TqdmProgressCallback
-from myosuite.utils import gym
 
 
 def make_env(env_id: str, seed: int, log_dir: str) -> Callable[[], Monitor]:
@@ -31,23 +27,39 @@ def make_env(env_id: str, seed: int, log_dir: str) -> Callable[[], Monitor]:
 
 def parse_args() -> argparse.Namespace:
   parser = argparse.ArgumentParser(description="Simple PPO trainer for Table Tennis")
-  parser.add_argument("--env-id", type=str, default="myoChallengeTableTennisP1-v0", help="Gymnasium environment ID")
-  parser.add_argument("--total-timesteps", type=int, default=30000000, help="Total PPO training timesteps")
-  parser.add_argument("--log-dir", type=str, default=os.path.join("runs", "ppo_tabletennis"), help="Log directory")
+  parser.add_argument("--env-id", type=str,
+                      default="myoChallengeTableTennisP1-v0", help="Gymnasium environment ID")
+  parser.add_argument("--total-timesteps", type=int, default=30000000,
+                      help="Total PPO training timesteps")
+  parser.add_argument("--log-dir", type=str, default=os.path.join("runs",
+                      "ppo_tabletennis"), help="Log directory")
   parser.add_argument("--seed", type=int, default=0, help="Random seed")
-  parser.add_argument("--num-envs", type=int, default=2, help="Number of parallel environments")
-  parser.add_argument("--policy", type=str, default="MlpPolicy", help="Stable-Baselines3 policy")
-  parser.add_argument("--tensorboard-log", type=str, default=None, help="Optional tensorboard log directory")
-  parser.add_argument("--save-path", type=str, default=None, help="Path to save the trained model")
-  parser.add_argument("--checkpoint-freq", type=int, default=5000000, help="How many steps between checkpoints")
-  parser.add_argument("--wandb-project", type=str, default="myosuite-ppo", help="Optional W&B project to log metrics to")
-  parser.add_argument("--render-steps", type=int, default=0, help="Record a video every this many timesteps (0 disables)")
-  parser.add_argument("--rollout-steps", type=int, default=500, help="Steps per saved rollout")
-  parser.add_argument("--lstm-hidden-size", type=int, default=256, help="Hidden state size for LSTM policies")
-  parser.add_argument("--n-lstm-layers", type=int, default=1, help="Number of stacked LSTM layers")
-  parser.add_argument("--eval-freq", type=int, default=10000, help="Evaluate policy every N steps")
-  parser.add_argument("--eval-envs", type=int, default=2, help="Number of parallel eval envs")
-  parser.add_argument("--eval-episodes", type=int, default=10, help="Total eval episodes per evaluation run")
+  parser.add_argument("--num-envs", type=int, default=2,
+                      help="Number of parallel environments")
+  parser.add_argument("--policy", type=str, default="MlpPolicy",
+                      help="Stable-Baselines3 policy")
+  parser.add_argument("--tensorboard-log", type=str, default=None,
+                      help="Optional tensorboard log directory")
+  parser.add_argument("--save-path", type=str, default=None,
+                      help="Path to save the trained model")
+  parser.add_argument("--checkpoint-freq", type=int, default=5000000,
+                      help="How many steps between checkpoints")
+  parser.add_argument("--wandb-project", type=str, default="myosuite-ppo",
+                      help="Optional W&B project to log metrics to")
+  parser.add_argument("--render-steps", type=int, default=0,
+                      help="Record a video every this many timesteps (0 disables)")
+  parser.add_argument("--rollout-steps", type=int, default=500,
+                      help="Steps per saved rollout")
+  parser.add_argument("--lstm-hidden-size", type=int, default=256,
+                      help="Hidden state size for LSTM policies")
+  parser.add_argument("--n-lstm-layers", type=int, default=1,
+                      help="Number of stacked LSTM layers")
+  parser.add_argument("--eval-freq", type=int, default=10000,
+                      help="Evaluate policy every N steps")
+  parser.add_argument("--eval-envs", type=int, default=2,
+                      help="Number of parallel eval envs")
+  parser.add_argument("--eval-episodes", type=int, default=10,
+                      help="Total eval episodes per evaluation run")
   return parser.parse_args()
 
 
@@ -55,7 +67,6 @@ def main() -> None:
   args = parse_args()
 
   run_id = f"run-ppo-{time.strftime('%Y%m%d-%H%M%S')}"
-
 
   log_dir = os.path.abspath(os.path.join(args.log_dir, run_id))
   os.makedirs(log_dir, exist_ok=True)
@@ -65,8 +76,8 @@ def main() -> None:
   video_dir = os.path.abspath(os.path.join(log_dir, "videos"))
 
   make_env_fns = [
-    make_env(env_id=args.env_id, seed=args.seed + idx, log_dir=log_dir)
-    for idx in range(args.num_envs)
+      make_env(env_id=args.env_id, seed=args.seed + idx, log_dir=log_dir)
+      for idx in range(args.num_envs)
   ]
 
   print(f"Making {args.num_envs} environments")
@@ -74,8 +85,8 @@ def main() -> None:
   vec_env = VecMonitor(DummyVecEnv(make_env_fns))
 
   make_eval_env_fns = [
-    make_env(env_id=args.env_id, seed=args.seed + 12345 + idx, log_dir=log_dir)
-    for idx in range(args.eval_envs)
+      make_env(env_id=args.env_id, seed=args.seed + 12345 + idx, log_dir=log_dir)
+      for idx in range(args.eval_envs)
   ]
   eval_vec_env = VecMonitor(DummyVecEnv(make_eval_env_fns))
 
@@ -84,29 +95,30 @@ def main() -> None:
 
   is_lstm_policy = "lstm" in args.policy.lower()
   policy_kwargs = (
-    {
-      "lstm_hidden_size": args.lstm_hidden_size,
-      "n_lstm_layers": args.n_lstm_layers,
-    }
-    if is_lstm_policy
-    else None
+      {
+          "lstm_hidden_size": args.lstm_hidden_size,
+          "n_lstm_layers": args.n_lstm_layers,
+      }
+      if is_lstm_policy
+      else None
   )
 
   model = PPO(
-    policy=args.policy,
-    env=vec_env,
-    verbose=1,
-    seed=args.seed,
-    tensorboard_log=os.path.abspath(args.tensorboard_log) if args.tensorboard_log else None,
-    policy_kwargs=policy_kwargs,
+      policy=args.policy,
+      env=vec_env,
+      verbose=1,
+      seed=args.seed,
+      tensorboard_log=os.path.abspath(
+          args.tensorboard_log) if args.tensorboard_log else None,
+      policy_kwargs=policy_kwargs,
   )
 
   callbacks = [
-    CheckpointCallback(
-      save_freq=args.checkpoint_freq,
-      save_path=checkpoint_dir,
-      name_prefix="ppo",
-    )
+      CheckpointCallback(
+          save_freq=args.checkpoint_freq,
+          save_path=checkpoint_dir,
+          name_prefix="ppo",
+      )
   ]
   wandb_module = None
 
@@ -115,9 +127,9 @@ def main() -> None:
 
     wandb_module = _wandb
     wandb_module.init(
-      project=args.wandb_project,
-      name=run_id,
-      config=vars(args),
+        project=args.wandb_project,
+        name=run_id,
+        config=vars(args),
     )
     callbacks.append(WandbCallback())
 
@@ -129,22 +141,22 @@ def main() -> None:
       return Monitor(env, filename=render_monitor_file)
 
     callbacks.append(
-      PeriodicVideoRecorder(
-        video_dir=video_dir,
-        env_id=args.env_id,
-        record_every_steps=args.render_steps,
-        rollout_steps=args.rollout_steps,
-        wrap_env_fn=_wrap_env_for_rendering,
-        verbose=1,
-      )
+        PeriodicVideoRecorder(
+            video_dir=video_dir,
+            env_id=args.env_id,
+            record_every_steps=args.render_steps,
+            rollout_steps=args.rollout_steps,
+            wrap_env_fn=_wrap_env_for_rendering,
+            verbose=1,
+        )
     )
 
   callbacks.append(PeriodicEvaluator(
-    eval_vec=eval_vec_env,
-    eval_freq=args.eval_freq,
-    eval_episodes=args.eval_episodes,
-    metrics_env=metrics_env,
-    verbose=1
+      eval_vec=eval_vec_env,
+      eval_freq=args.eval_freq,
+      eval_episodes=args.eval_episodes,
+      metrics_env=metrics_env,
+      verbose=1
   ))
 
   callbacks.append(TqdmProgressCallback(total_steps=args.total_timesteps))
@@ -167,4 +179,3 @@ def main() -> None:
 
 if __name__ == "__main__":
   main()
-

@@ -15,14 +15,14 @@ class PeriodicVideoRecorder(BaseCallback):
   """
 
   def __init__(
-    self,
-    video_dir: str,
-    env_id: Optional[str] = None,
-    record_every_steps: int = 50000,
-    rollout_steps: int = 500,
-    wrap_env_fn: Optional[Callable] = None,
-    make_env_fn: Optional[Callable] = None,
-    verbose: int = 0
+      self,
+      video_dir: str,
+      env_id: Optional[str] = None,
+      record_every_steps: int = 50000,
+      rollout_steps: int = 500,
+      wrap_env_fn: Optional[Callable] = None,
+      make_env_fn: Optional[Callable] = None,
+      verbose: int = 0
   ):
     super().__init__(verbose)
     self.video_dir = video_dir
@@ -46,14 +46,14 @@ class PeriodicVideoRecorder(BaseCallback):
   def _record_video(self) -> None:
     # Create a fresh env for recording to avoid interfering with training buffers
     if self.make_env_fn is not None:
-        base_env = self.make_env_fn()
+      base_env = self.make_env_fn()
     else:
-        try:
-          base_env = gym.make(self.env_id) if self.env_id is not None else None
-        except TypeError:
-          # Some envs may not accept render_mode; fallback to default
-          base_env = gym.make(self.env_id) if self.env_id is not None else None
-    
+      try:
+        base_env = gym.make(self.env_id) if self.env_id is not None else None
+      except TypeError:
+        # Some envs may not accept render_mode; fallback to default
+        base_env = gym.make(self.env_id) if self.env_id is not None else None
+
     if base_env is None:
       if self.verbose:
         print("[Video] Unable to determine env_id or make_env_fn for recording; skipping video.")
@@ -64,10 +64,10 @@ class PeriodicVideoRecorder(BaseCallback):
     # Use a simple policy rollout for a fixed number of steps
     frames_cam1: List[np.ndarray] = []
     frames_cam2: List[np.ndarray] = []
-    
+
     obs = env.reset()
     if isinstance(obs, tuple):
-        obs = obs[0]
+      obs = obs[0]
 
     done = False
     truncated = False
@@ -76,7 +76,8 @@ class PeriodicVideoRecorder(BaseCallback):
       # Retrieve obs vector if env returns dict
       if isinstance(obs, dict):
         if hasattr(env.unwrapped, 'obsdict2obsvec'):
-          obs_vec = env.unwrapped.obsdict2obsvec(env.unwrapped.obs_dict, env.unwrapped.obs_keys)[1]
+          obs_vec = env.unwrapped.obsdict2obsvec(
+              env.unwrapped.obs_dict, env.unwrapped.obs_keys)[1]
         else:
           obs_vec = obs
       else:
@@ -84,21 +85,25 @@ class PeriodicVideoRecorder(BaseCallback):
 
       action, _ = self.model.predict(obs_vec, deterministic=True)
       obs, reward, done, truncated, info = env.step(action)
-      
+
       try:
         # Preferred path: use MuJoCo offscreen renderer if available
         # Check for sim and renderer
         if hasattr(env.unwrapped, "sim") and hasattr(env.unwrapped.sim, "renderer") and hasattr(env.unwrapped.sim.renderer, "render_offscreen"):
-          f1 = env.unwrapped.sim.renderer.render_offscreen(width=640, height=480, camera_id=1)
-          f2 = env.unwrapped.sim.renderer.render_offscreen(width=640, height=480, camera_id=2)
-          if f1 is not None: frames_cam1.append(f1.astype(np.uint8))
-          if f2 is not None: frames_cam2.append(f2.astype(np.uint8))
+          f1 = env.unwrapped.sim.renderer.render_offscreen(
+              width=640, height=480, camera_id=1)
+          f2 = env.unwrapped.sim.renderer.render_offscreen(
+              width=640, height=480, camera_id=2)
+          if f1 is not None:
+            frames_cam1.append(f1.astype(np.uint8))
+          if f2 is not None:
+            frames_cam2.append(f2.astype(np.uint8))
         else:
           # Fallback: use Gymnasium render() API
           frame = env.render()
           if frame is None:
             frame = env.render(mode='rgb_array')
-          
+
           if frame is not None:
             frames_cam1.append(frame.astype(np.uint8))
       except Exception as e:
@@ -106,7 +111,7 @@ class PeriodicVideoRecorder(BaseCallback):
           print(f"[Video] Rendering failed: {e}")
         break
       steps += 1
-    
+
     env.close()
 
     if len(frames_cam1) == 0 and len(frames_cam2) == 0:
@@ -116,19 +121,22 @@ class PeriodicVideoRecorder(BaseCallback):
 
     # Save mp4 using imageio-ffmpeg (via moviepy or imageio)
     import imageio
-    
+
     # Helper to save and log
     def save_and_log(frames, cam_suffix):
-        if not frames: return
-        video_path = os.path.join(self.video_dir, f"rollout_{int(time.time())}_steps{self.num_timesteps}{cam_suffix}.mp4")
-        try:
-            imageio.mimwrite(video_path, frames, fps=30, macro_block_size=None)
-            if wandb.run is not None:
-                 wandb.log({f"rollout/video{cam_suffix}": wandb.Video(video_path, format="mp4")}, step=self.num_timesteps)
-            if self.verbose:
-                 print(f"[Video] Saved {video_path}")
-        except Exception as e:
-            print(f"Failed to save video {cam_suffix}: {e}")
+      if not frames:
+        return
+      video_path = os.path.join(
+          self.video_dir, f"rollout_{int(time.time())}_steps{self.num_timesteps}{cam_suffix}.mp4")
+      try:
+        imageio.mimwrite(video_path, frames, fps=30, macro_block_size=None)
+        if wandb.run is not None:
+          wandb.log({f"rollout/video{cam_suffix}": wandb.Video(video_path,
+                    format="mp4")}, step=self.num_timesteps)
+        if self.verbose:
+          print(f"[Video] Saved {video_path}")
+      except Exception as e:
+        print(f"Failed to save video {cam_suffix}: {e}")
 
     save_and_log(frames_cam1, "_cam1")
     save_and_log(frames_cam2, "_cam2")
