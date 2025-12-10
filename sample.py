@@ -1,18 +1,15 @@
+from myosuite.utils import gym
+from stable_baselines3 import PPO
+import numpy as np
+import imageio
+from typing import Any, Dict, Iterable, Optional
+from pathlib import Path
+import time
+import subprocess
+import shutil
+import argparse
 import os
 os.environ.setdefault("MUJOCO_GL", "egl")
-
-import argparse
-import shutil
-import subprocess
-import time
-from pathlib import Path
-from typing import Any, Dict, Iterable, Optional
-
-import imageio
-import numpy as np
-from stable_baselines3 import PPO
-
-from myosuite.utils import gym
 
 
 def _write_with_ffmpeg(frames: Iterable[np.ndarray], path: str, fps: int) -> bool:
@@ -29,28 +26,28 @@ def _write_with_ffmpeg(frames: Iterable[np.ndarray], path: str, fps: int) -> boo
   height, width = first_frame.shape[:2]
   try:
     proc = subprocess.Popen(
-      [
-        ffmpeg_path,
-        "-y",
-        "-f",
-        "rawvideo",
-        "-pix_fmt",
-        "rgb24",
-        "-s",
-        f"{width}x{height}",
-        "-r",
-        str(fps),
-        "-i",
-        "-",
-        "-c:v",
-        "libx264",
-        "-pix_fmt",
-        "yuv420p",
-        path,
-      ],
-      stdin=subprocess.PIPE,
-      stdout=subprocess.PIPE,
-      stderr=subprocess.PIPE,
+        [
+            ffmpeg_path,
+            "-y",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgb24",
+            "-s",
+            f"{width}x{height}",
+            "-r",
+            str(fps),
+            "-i",
+            "-",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            path,
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
     )
     for frame in frames_list:
       proc.stdin.write(frame.tobytes())
@@ -119,10 +116,10 @@ def prepare_env(env_id: str, render_mode: Optional[str]) -> Any:
   # }
 
   kwargs = {
-    # "ball_xyz_range": {"low": [-1, -0.2, 1.32], "high": [-1, 0.2, 1.40]},
-    # "ball_qvel": True,
-    # "frame_skip": 8,
-    # "paddle_mass_range": (0.60, 0.60),
+      # "ball_xyz_range": {"low": [-1, -0.2, 1.32], "high": [-1, 0.2, 1.40]},
+      # "ball_qvel": True,
+      # "frame_skip": 8,
+      # "paddle_mass_range": (0.60, 0.60),
   }
 
   if render_mode:
@@ -137,7 +134,8 @@ def prepare_env(env_id: str, render_mode: Optional[str]) -> Any:
 def obs_to_vector(env: Any, obs: Any, model: PPO) -> Any:
   if isinstance(obs, dict):
     if hasattr(env.unwrapped, "obsdict2obsvec"):
-      _, obs_vec = env.unwrapped.obsdict2obsvec(env.unwrapped.obs_dict, env.unwrapped.obs_keys)
+      _, obs_vec = env.unwrapped.obsdict2obsvec(
+          env.unwrapped.obs_dict, env.unwrapped.obs_keys)
       return obs_vec
     return model.policy.obs_to_tensor(obs)[0].cpu().numpy()
   return obs
@@ -185,7 +183,8 @@ def rollout(env: Any, model: PPO, max_steps: int, deterministic: bool, render_op
       obs, _, done, _ = step
       truncated = False
     for cam_id in camera_ids:
-      frame = capture_frame(env, width=render_opts["width"], height=render_opts["height"], camera_id=cam_id)
+      frame = capture_frame(
+          env, width=render_opts["width"], height=render_opts["height"], camera_id=cam_id)
       if frame is not None:
         frames[cam_id].append(frame)
     steps += 1
@@ -194,22 +193,32 @@ def rollout(env: Any, model: PPO, max_steps: int, deterministic: bool, render_op
 
 
 def parse_args() -> argparse.Namespace:
-  parser = argparse.ArgumentParser(description="Sample PPO checkpoint rollouts and save videos")
-  parser.add_argument("--env-id", type=str, default="myoChallengeTableTennisP1-v0", help="Environment ID to render")
-  parser.add_argument("--checkpoint", type=str, required=True, help="Path to PPO checkpoint zip file or directory")
-  parser.add_argument("--output-dir", type=str, default="sample_videos", help="Directory where MP4 files will be written")
-  parser.add_argument("--episodes", type=int, default=1, help="Number of rollouts to record")
-  parser.add_argument("--max-steps", type=int, default=500, help="Maximum steps per rollout")
-  parser.add_argument("--deterministic", action="store_true", help="Use deterministic policy actions")
-  parser.add_argument("--render-mode", type=str, default=None, help="Optional gym render_mode parameter")
-  parser.add_argument("--render-width", type=int, default=640, help="Rendered frame width")
-  parser.add_argument("--render-height", type=int, default=480, help="Rendered frame height")
+  parser = argparse.ArgumentParser(
+      description="Sample PPO checkpoint rollouts and save videos")
+  parser.add_argument("--env-id", type=str,
+                      default="myoChallengeTableTennisP1-v0", help="Environment ID to render")
+  parser.add_argument("--checkpoint", type=str, required=True,
+                      help="Path to PPO checkpoint zip file or directory")
+  parser.add_argument("--output-dir", type=str, default="sample_videos",
+                      help="Directory where MP4 files will be written")
+  parser.add_argument("--episodes", type=int, default=1,
+                      help="Number of rollouts to record")
+  parser.add_argument("--max-steps", type=int, default=500,
+                      help="Maximum steps per rollout")
+  parser.add_argument("--deterministic", action="store_true",
+                      help="Use deterministic policy actions")
+  parser.add_argument("--render-mode", type=str, default=None,
+                      help="Optional gym render_mode parameter")
+  parser.add_argument("--render-width", type=int, default=640,
+                      help="Rendered frame width")
+  parser.add_argument("--render-height", type=int, default=480,
+                      help="Rendered frame height")
   parser.add_argument(
-    "--render-camera-ids",
-    type=int,
-    nargs="+",
-    default=[1, 2],
-    help="Camera ids to query from the renderer (can pass multiple values)",
+      "--render-camera-ids",
+      type=int,
+      nargs="+",
+      default=[1, 2],
+      help="Camera ids to query from the renderer (can pass multiple values)",
   )
   parser.add_argument("--fps", type=int, default=30, help="Video frames per second")
   return parser.parse_args()
@@ -223,9 +232,9 @@ def main() -> None:
   model = PPO.load(str(checkpoint_path), env=env)
 
   render_opts = {
-    "width": args.render_width,
-    "height": args.render_height,
-    "camera_ids": args.render_camera_ids,
+      "width": args.render_width,
+      "height": args.render_height,
+      "camera_ids": args.render_camera_ids,
   }
 
   for episode in range(1, args.episodes + 1):
@@ -245,7 +254,8 @@ def main() -> None:
         imageio.mimwrite(video_path, frames, fps=args.fps, macro_block_size=None)
       except ValueError:
         if _write_with_ffmpeg(frames, video_path, args.fps):
-          print(f"Wrote episode {episode} cam{cam_id} via ffmpeg fallback -> {video_path}")
+          print(
+              f"Wrote episode {episode} cam{cam_id} via ffmpeg fallback -> {video_path}")
           continue
         raise
       print(f"Wrote episode {episode} cam{cam_id} to {video_path}")
@@ -253,4 +263,3 @@ def main() -> None:
 
 if __name__ == "__main__":
   main()
-

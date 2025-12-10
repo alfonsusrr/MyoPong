@@ -12,11 +12,11 @@ class TqdmProgressCallback(BaseCallback):
   def _on_training_start(self) -> None:
     initial = min(self.num_timesteps, self.total_steps)
     self.pbar = tqdm(
-      total=self.total_steps,
-      initial=initial,
-      desc="Training Progress",
-      unit="step",
-      leave=True,
+        total=self.total_steps,
+        initial=initial,
+        desc="Training Progress",
+        unit="step",
+        leave=True,
     )
     self.last_num_timesteps = self.num_timesteps
 
