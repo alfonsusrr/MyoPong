@@ -8,6 +8,7 @@ from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.callbacks import CheckpointCallback
 from sb3_contrib import RecurrentPPO
+import torch
 import time
 from dotenv import load_dotenv
 from typing import Any, Callable
@@ -77,17 +78,8 @@ def prepare_env(env_id: str, difficulty: int = 0) -> Any:
   fric_high = [n + d for n, d in zip(fric_nom, fric_delta)]
 
   curriculum_levels = {
-      # Level 0: Warmup
-      # - Fixed Position (with tiny noise to break deterministic trap)
-      # - Calculated Velocity (Guaranteed to land on table)
-      0: {
-          "ball_xyz_range": {
-              "low":  [-1.225, -0.475, 1.45],
-              "high": [-1.225, -0.475, 1.45]
-          },
-          "ball_qvel": True,
-          "weighted_reward_keys": default_rewards
-      },
+      # Level 0: Warmup: Default
+      0: {},
 
       # Level 1: Phase 1 Box
       # - Position: Phase 1 specific box
@@ -95,7 +87,7 @@ def prepare_env(env_id: str, difficulty: int = 0) -> Any:
       1: {
           "ball_xyz_range": {"low": p1_low, "high": p1_high},
           "ball_qvel": True,
-          "weighted_reward_keys": default_rewards
+          # "weighted_reward_keys": default_rewards
       },
 
       # Level 2: Phase 2 Box (Wider)
@@ -104,7 +96,7 @@ def prepare_env(env_id: str, difficulty: int = 0) -> Any:
       2: {
           "ball_xyz_range": {"low": p2_low, "high": p2_high},
           "ball_qvel": True,
-          "weighted_reward_keys": default_rewards
+          # "weighted_reward_keys": default_rewards
       },
 
       # Level 3: Phase 2 Spatial Expansion + Mass.
@@ -228,6 +220,17 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
   args = parse_args()
 
+  # Select device: prefer CUDA if available, then MPS on Apple Silicon, else CPU.
+  if torch.cuda.is_available():
+    device = torch.device("cuda")
+    print(f"Using CUDA device for policy network: {torch.cuda.get_device_name(0)}")
+  elif torch.backends.mps.is_available():
+    device = torch.device("mps")
+    print("Using MPS device for policy network.")
+  else:
+    device = torch.device("cpu")
+    print("Using CPU device for policy network.")
+
   run_id = f"run-ppo-lstm-sarl-{time.strftime('%Y%m%d-%H%M%S')}-lvl{args.difficulty}"
 
   log_dir = os.path.abspath(os.path.join(args.log_dir, run_id))
@@ -301,7 +304,7 @@ def main() -> None:
   if args.resume_from_checkpoint:
     checkpoint_path = resolve_checkpoint_path(args.resume_from_checkpoint)
     print(f"Resuming RecurrentPPO from checkpoint: {checkpoint_path}")
-    model = RecurrentPPO.load(checkpoint_path, env=vec_env)
+    model = RecurrentPPO.load(checkpoint_path, env=vec_env, device=device)
 
     current_timesteps = model.num_timesteps
     remaining_timesteps = args.total_timesteps - current_timesteps
@@ -322,6 +325,7 @@ def main() -> None:
         seed=args.seed,
         tensorboard_log=os.path.abspath(
             args.tensorboard_log) if args.tensorboard_log else None,
+        device=device,
         policy_kwargs=policy_kwargs,
     )
 
