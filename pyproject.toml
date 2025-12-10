@@ -3,7 +3,7 @@ name = "myopong"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.10"
 dependencies = [
     "absl-py==2.3.1",
     "ale-py==0.11.2",
