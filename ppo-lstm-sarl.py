@@ -127,6 +127,10 @@ def parse_args() -> argparse.Namespace:
                       help="Number of parallel eval envs")
   parser.add_argument("--eval-episodes", type=int, default=10,
                       help="Total eval episodes per evaluation run")
+  parser.add_argument("--n-steps", type=int, default=4096,
+                      help="Number of steps to run for each environment per update")
+  parser.add_argument("--batch-size", type=int, default=2048,
+                      help="Size of the batch for training")
   parser.add_argument("--difficulty", type=int, default=0,
                       help="Curriculum difficulty level (0-4)")
   return parser.parse_args()
@@ -243,7 +247,8 @@ def main() -> None:
     model = RecurrentPPO(
         policy=args.policy,
         env=vec_env,
-        # n_steps=4096,
+        n_steps=args.n_steps,           # High batch size for stability
+        batch_size=args.batch_size,     # Large mini-batch for M4 GPU/AMX speed
         verbose=1,
         seed=args.seed,
         tensorboard_log=os.path.abspath(
