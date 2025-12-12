@@ -5,7 +5,7 @@ from modules.callback.evaluator import PeriodicEvaluator
 from modules.callback.wandb import WandbCallback
 from modules.callback.renderer import PeriodicVideoRecorder
 from modules.envs.curriculum import tabletennis_curriculum_kwargs
-from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
+from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor, VecNormalize
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.callbacks import CheckpointCallback
 from sb3_contrib import RecurrentPPO
@@ -176,7 +176,12 @@ def main() -> None:
 
   print(f"Making {len(make_env_fns)} environments")
 
-  vec_env = VecMonitor(SubprocVecEnv(make_env_fns))
+  # Training envs with monitoring + normalization
+  train_env = SubprocVecEnv(make_env_fns)
+  train_env = VecMonitor(train_env)
+  vec_env = VecNormalize(
+      train_env, training=True, norm_obs=True, norm_reward=True, clip_obs=10.0
+  )
 
   # Create Eval Envs
   make_eval_env_fns = [
@@ -192,7 +197,13 @@ def main() -> None:
       )
       for idx in range(args.eval_envs)
   ]
-  eval_vec_env = VecMonitor(SubprocVecEnv(make_eval_env_fns))
+  eval_env = SubprocVecEnv(make_eval_env_fns)
+  eval_env = VecMonitor(eval_env)
+  eval_vec_env = VecNormalize(
+      eval_env, training=False, norm_obs=True, norm_reward=False, clip_obs=10.0
+  )
+  # Share normalization statistics with training env
+  eval_vec_env.obs_rms = vec_env.obs_rms
 
   # Metrics Env (single instance)
   try:
@@ -320,6 +331,10 @@ def main() -> None:
       metrics_env.close()
     except:
       pass
+
+    # Save VecNormalize statistics (if used) alongside the model
+    if isinstance(vec_env, VecNormalize):
+      vec_env.save(os.path.join(log_dir, "vecnormalize.pkl"))
 
     print(f"Model saved to: {final_save_path}")
     if wandb_module is not None:

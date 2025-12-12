@@ -4,7 +4,7 @@ from modules.callback.evaluator import PeriodicEvaluator
 from modules.callback.wandb import WandbCallback
 from modules.callback.renderer import PeriodicVideoRecorder
 from modules.envs.curriculum import tabletennis_curriculum_kwargs
-from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
+from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor, VecNormalize
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.callbacks import CheckpointCallback
 from stable_baselines3 import PPO
@@ -133,7 +133,12 @@ def main() -> None:
 
   print(f"Making {len(make_env_fns)} environments with difficulty level {args.difficulty}")
 
-  vec_env = VecMonitor(SubprocVecEnv(make_env_fns))
+  # Training envs with monitoring + normalization
+  train_env = SubprocVecEnv(make_env_fns)
+  train_env = VecMonitor(train_env)
+  vec_env = VecNormalize(
+      train_env, training=True, norm_obs=True, norm_reward=True, clip_obs=10.0
+  )
 
   make_eval_env_fns = [
       make_env(
@@ -144,7 +149,13 @@ def main() -> None:
       )
       for idx in range(args.eval_envs)
   ]
-  eval_vec_env = VecMonitor(SubprocVecEnv(make_eval_env_fns))
+  eval_env = SubprocVecEnv(make_eval_env_fns)
+  eval_env = VecMonitor(eval_env)
+  eval_vec_env = VecNormalize(
+      eval_env, training=False, norm_obs=True, norm_reward=False, clip_obs=10.0
+  )
+  # Share normalization statistics with training env
+  eval_vec_env.obs_rms = vec_env.obs_rms
 
   # Metrics Env (single instance, unwrapped)
   try:
@@ -263,6 +274,10 @@ def main() -> None:
     else:
       print("Skipping training as target timesteps reached.")
   finally:
+    # Save VecNormalize statistics (if used) alongside the model
+    if isinstance(vec_env, VecNormalize):
+      vec_env.save(os.path.join(log_dir, "vecnormalize.pkl"))
+
     save_path = args.save_path or os.path.join(log_dir, "ppo_tabletennis")
     model.save(save_path)
     # SubprocVecEnv can raise EOFError on close if a worker died earlier.

@@ -5,7 +5,7 @@ from modules.callback.evaluator import PeriodicEvaluator
 from modules.callback.wandb import WandbCallback
 from modules.callback.renderer import PeriodicVideoRecorder
 from modules.envs.curriculum import tabletennis_curriculum_kwargs
-from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
+from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor, VecNormalize
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.callbacks import CheckpointCallback
 from stable_baselines3 import PPO
@@ -123,6 +123,10 @@ def parse_args() -> argparse.Namespace:
                       help="Number of parallel eval envs")
   parser.add_argument("--eval-episodes", type=int, default=10,
                       help="Total eval episodes per evaluation run")
+  parser.add_argument("--n-steps", type=int, default=4096,
+                      help="Number of steps to run for each environment per update")
+  parser.add_argument("--batch-size", type=int, default=2048,
+                      help="Size of the batch for training")
   parser.add_argument("--difficulty", type=int, default=0,
                       help="Curriculum difficulty level (0-4)")
   return parser.parse_args()
@@ -164,7 +168,12 @@ def main() -> None:
 
   print(f"Making {len(make_env_fns)} environments with difficulty level {args.difficulty}")
 
-  vec_env = VecMonitor(SubprocVecEnv(make_env_fns))
+  # Training envs with monitoring + normalization
+  train_env = SubprocVecEnv(make_env_fns)
+  train_env = VecMonitor(train_env)
+  vec_env = VecNormalize(
+      train_env, training=True, norm_obs=True, norm_reward=True, clip_obs=10.0
+  )
 
   # Create Eval Envs
   make_eval_env_fns = [
@@ -172,7 +181,13 @@ def main() -> None:
                ica=ica, pca=pca, scaler=scaler, phi=phi, difficulty=args.difficulty)
       for idx in range(args.eval_envs)
   ]
-  eval_vec_env = VecMonitor(SubprocVecEnv(make_eval_env_fns))
+  eval_env = SubprocVecEnv(make_eval_env_fns)
+  eval_env = VecMonitor(eval_env)
+  eval_vec_env = VecNormalize(
+      eval_env, training=False, norm_obs=True, norm_reward=False, clip_obs=10.0
+  )
+  # Share normalization statistics with training env
+  eval_vec_env.obs_rms = vec_env.obs_rms
 
   # Metrics Env (single instance)
   try:
@@ -210,11 +225,19 @@ def main() -> None:
     model = PPO(
         policy=args.policy,
         env=vec_env,
-        # n_steps=4096,
+        n_steps=args.n_steps,           # High batch size for stability
+        batch_size=args.batch_size,     # Large mini-batch for M4 GPU/AMX speed
         verbose=1,
         seed=args.seed,
         tensorboard_log=os.path.abspath(
             args.tensorboard_log) if args.tensorboard_log else None,
+        use_sde=True,              # Enable gSDE
+        sde_sample_freq=4,         # Resample noise every 4 steps (smooths movement)
+        policy_kwargs=dict(
+            # gSDE kwargs
+            log_std_init=-2,       # Start with moderate noise (not too crazy)
+            net_arch=[256, 256]    # Ensure network size is explicit
+        ),
     )
 
   callbacks = [
@@ -278,6 +301,10 @@ def main() -> None:
     else:
       print("Skipping training as target timesteps reached.")
   finally:
+    # Save VecNormalize statistics (if used) alongside the model
+    if isinstance(vec_env, VecNormalize):
+      vec_env.save(os.path.join(log_dir, "vecnormalize.pkl"))
+
     final_save_path = args.save_path or os.path.join(log_dir, "ppo_sarl_tabletennis")
     model.save(final_save_path)
     # SubprocVecEnv can raise EOFError on close if a worker died earlier.

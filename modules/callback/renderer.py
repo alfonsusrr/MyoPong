@@ -5,6 +5,7 @@ from typing import List, Optional, Callable
 import numpy as np
 import wandb
 from stable_baselines3.common.callbacks import BaseCallback
+from stable_baselines3.common.vec_env import VecNormalize
 from myosuite.utils import gym
 
 
@@ -82,8 +83,17 @@ class PeriodicVideoRecorder(BaseCallback):
           obs_vec = obs
       else:
         obs_vec = obs
+      # If the model was trained with VecNormalize, normalize observations
+      # using the statistics from the training env.
+      obs_input = obs_vec
+      try:
+        model_env = self.model.get_env()
+        if isinstance(model_env, VecNormalize):
+          obs_input = model_env.normalize_obs(obs_vec)
+      except Exception:
+        pass
 
-      action, _ = self.model.predict(obs_vec, deterministic=True)
+      action, _ = self.model.predict(obs_input, deterministic=True)
       obs, reward, done, truncated, info = env.step(action)
 
       try:
