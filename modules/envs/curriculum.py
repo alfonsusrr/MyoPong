@@ -7,19 +7,27 @@ def tabletennis_curriculum_kwargs(difficulty: int = 0) -> Dict[str, Any]:
   implementing the shared curriculum levels used by PPO scripts.
   """
 
-#   # Default rewards (Dense shaping for initial learning)
-#   default_rewards = {
-#       "reach_dist": 1,
-#       "palm_dist": 1,
-#       "paddle_quat": 2,
-#       "act_reg": 0.5,
-#       "torso_up": 2,
-#       "sparse": 100,
-#       "solved": 1000,
-#       "done": -10,
-#   }
+  # -------------------------------------------------------------------------
+  # REWARD CONFIGURATIONS
+  # -------------------------------------------------------------------------
 
-  # Finetuning rewards (Sparse focus for robustness)
+  # 1. Warmup Rewards (New)
+  # Lowers 'act_reg' (effort penalty) to 0.1.
+  # Essential for early training so the agent doesn't collapse to save energy
+  # before it knows how to hit the ball.
+  warmup_rewards = {
+      "reach_dist": 1,
+      "palm_dist": 1,
+      "paddle_quat": 2,
+      "act_reg": 0.1,  # <--- SIGNIFICANTLY LOWERED (Default is 0.5)
+      "torso_up": 2,
+      "sparse": 100,
+      "solved": 1000,
+      "done": -10,
+  }
+
+  # 2. Finetuning Rewards (Original)
+  # Sparse focus for robustness once the agent can hit consistently.
   finetuning_rewards = {
       "reach_dist": 0.6,
       "palm_dist": 0.6,
@@ -31,12 +39,15 @@ def tabletennis_curriculum_kwargs(difficulty: int = 0) -> Dict[str, Any]:
       "done": -10,
   }
 
-  # --- Constants from Docs ---
-  # Phase 1 Pos: [-1.20, -0.45, 1.50] to [-1.25, -0.50, 1.40]
+  # -------------------------------------------------------------------------
+  # PHYSICS CONSTANTS
+  # -------------------------------------------------------------------------
+
+  # Phase 1 Source Pos (Opponent Side): [-1.25, -0.50, 1.40] to [-1.20, -0.45, 1.50]
   p1_low = [-1.25, -0.50, 1.40]
   p1_high = [-1.20, -0.45, 1.50]
 
-  # Phase 2 Pos: [-0.5, 0.50, 1.50] to [-1.25, -0.50, 1.40]
+  # Phase 2 Source Pos (Wider Opponent Side)
   p2_low = [-1.25, -0.50, 1.40]
   p2_high = [-0.5, 0.50, 1.50]
 
@@ -48,29 +59,40 @@ def tabletennis_curriculum_kwargs(difficulty: int = 0) -> Dict[str, Any]:
   fric_low = [n - d for n, d in zip(fric_nom, fric_delta)]
   fric_high = [n + d for n, d in zip(fric_nom, fric_delta)]
 
+  # -------------------------------------------------------------------------
+  # CURRICULUM LEVELS
+  # -------------------------------------------------------------------------
+
   curriculum_levels = {
       # Level 0: "The Tee Ball"
       # - Ball starts in P1 zone (noisy)
       # - Ball TARGETS the CENTER of the table (No wild corner shots)
       0: {
           "ball_xyz_range": {
-              "low":  [-1.235, -0.485, 1.44],
-              "high": [-1.215, -0.465, 1.46]
+              "low":  [-1.25, -0.485, 1.44],
+              "high": [-1.20, -0.465, 1.46]
           },
           # Keep this TRUE. We need the agent to learn physics, not memorization.
           "ball_qvel": True,
+          # Serve speed control (keeps target_xyz_range unchanged):
+          # - 1.0 = default speed
+          # - >1.0 = slower serves (longer flight time, lower horizontal velocity)
+          "ball_flight_time_scale": 1.5,
           # Target the strip in the middle of the table (Y = -0.1 to 0.1)
           "target_xyz_range": {
-              "low":  [0.6, -0.1, 0.785],
-              "high": [1.2,  0.1, 0.785]
+              #   "low":  [0.6, -0.1, 0.785],
+              #   "high": [1.2,  0.1, 0.785]
+              "low": [0.6, 0.05, 0.785],
+              "high": [1.2,  0.15, 0.785]
           },
+          "weighted_reward_keys": warmup_rewards,
       },
       # Level 1: "Directional Training"
       # - Widen the target to Y = -0.3 to 0.3 (Mid-range angles)
       1: {
           "ball_xyz_range": {
-              "low":  [-1.235, -0.50, 1.44],
-              "high": [-1.215, -0.45, 1.46]
+              "low":  p1_low,
+              "high": p1_high
           },
           "ball_qvel": True,
           # Wider target area
@@ -78,38 +100,48 @@ def tabletennis_curriculum_kwargs(difficulty: int = 0) -> Dict[str, Any]:
               "low":  [0.5, -0.3, 0.785],
               "high": [1.35, 0.3, 0.785]
           },
+          "weighted_reward_keys": warmup_rewards,
       },
-      # Level 2: Phase 1 Box
-      # - Position: Phase 1 specific box
-      # - Velocity: Full
+
+      # ---------------------------------------------------------------------
+      # Level 2: "Standard Phase 1" (Challenge Baseline)
+      # Goal: Handle standard serves from the opponent.
+      # Note: Reverts to default rewards (higher effort penalty).
+      # ---------------------------------------------------------------------
       2: {
           "ball_xyz_range": {"low": p1_low, "high": p1_high},
-          "ball_qvel": True,
+          "ball_qvel": True,  # Use internal solver to target paddle
       },
-      # Level 3: Phase 2 Box (Wider)
-      # - Position: Phase 2 full width
-      # - Velocity: Full
+
+      # ---------------------------------------------------------------------
+      # Level 3: "Phase 2 Coverage" (Wider Angles)
+      # Goal: Reach for balls across the full width of the table.
+      # ---------------------------------------------------------------------
       3: {
           "ball_xyz_range": {"low": p2_low, "high": p2_high},
           "ball_qvel": True,
       },
-      # Level 4: Phase 2 Spatial Expansion + Mass.
-      # Phase 2 Spatial Expansion
-      # Add Paddle Mass: 100g - 150g (0.1 - 0.15 kg)
+
+      # ---------------------------------------------------------------------
+      # Level 4: "Robustness" (Mass Variations)
+      # Goal: Handle paddle mass changes (100g - 150g)
+      # ---------------------------------------------------------------------
       4: {
           "ball_xyz_range": {"low": p2_low, "high": p2_high},
           "ball_qvel": True,
-          "paddle_mass_range": (0.1, 0.15),  # CORRECTED UNITS (kg)
+          "paddle_mass_range": (0.1, 0.15),
           "weighted_reward_keys": finetuning_rewards,
       },
-      # Level 5: Full Phase 2 (Advanced).
-      # Full spatial, Full velocity, Full dynamics (Mass + Friction).
+
+      # ---------------------------------------------------------------------
+      # Level 5: "Generalization" (Physics Variations)
+      # Goal: Full Phase 2 (Advanced) - Mass + Friction + Noise
+      # ---------------------------------------------------------------------
       5: {
           "ball_xyz_range": {"low": p2_low, "high": p2_high},
           "ball_qvel": True,
           "paddle_mass_range": (0.1, 0.15),
           "ball_friction_range": {"low": fric_low, "high": fric_high},
-          # Keep your noise choice if helpful
           "qpos_noise_range": {"low": -0.02, "high": 0.02},
           "weighted_reward_keys": finetuning_rewards,
       },
