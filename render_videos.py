@@ -9,9 +9,13 @@ import imageio
 import joblib
 
 from stable_baselines3 import PPO
+from sb3_contrib import RecurrentPPO
 
 # Use MyoSuite's gym wrapper
 from myosuite.utils import gym
+
+# Match training curriculum difficulty knobs
+from modules.envs.curriculum import tabletennis_curriculum_kwargs
 
 # Use the same SARL action wrapper as in training
 from SAR.SynergyWrapper import SynNoSynWrapper
@@ -115,10 +119,23 @@ def parse_args() -> argparse.Namespace:
       help="Path to the PPO checkpoint (.zip) to load.",
   )
   parser.add_argument(
+      "--algo",
+      type=str,
+      default="ppo",
+      choices=["ppo", "recurrent_ppo"],
+      help="Which algorithm checkpoint to load (default: ppo).",
+  )
+  parser.add_argument(
       "--env-id",
       type=str,
       default="myoChallengeTableTennisP1-v0",
       help="Gym environment ID (default: myoChallengeTableTennisP1-v0).",
+  )
+  parser.add_argument(
+      "--difficulty",
+      type=int,
+      default=0,
+      help="Curriculum difficulty level (0-4). Passed as env kwargs when supported.",
   )
   parser.add_argument(
       "--num-episodes",
@@ -169,6 +186,12 @@ def parse_args() -> argparse.Namespace:
       help="Directory where output videos will be saved (default: ./videos).",
   )
   parser.add_argument(
+      "--use-sar",
+      action="store_true",
+      default=False,
+      help="If set, wrap the env with SAR SynNoSynWrapper (requires --sar-dir).",
+  )
+  parser.add_argument(
       "--sar-dir",
       type=str,
       default="SAR",
@@ -191,21 +214,32 @@ def main(args: argparse.Namespace) -> None:
 
   # Load model
   print(f"Loading model from: {args.checkpoint_path}")
-  model = PPO.load(args.checkpoint_path)
+  if args.algo == "ppo":
+    model = PPO.load(args.checkpoint_path)
+  else:
+    # RecurrentPPO checkpoints (e.g. Lattice) may require the policy class to be importable.
+    model = RecurrentPPO.load(args.checkpoint_path)
   print("Model loaded successfully.")
 
-  # Load SAR artifacts (match PPO-SARL training setup)
-  print(f"Loading SAR artifacts from {args.sar_dir}...")
-  ica = joblib.load(os.path.join(args.sar_dir, "ica.pkl"))
-  pca = joblib.load(os.path.join(args.sar_dir, "pca.pkl"))
-  scaler = joblib.load(os.path.join(args.sar_dir, "scaler.pkl"))
-  phi = float(args.phi)
-  print("SAR artifacts loaded.")
+  # Create base env and optionally wrap with SAR SynNoSynWrapper
+  print(f"Creating environment: {args.env_id} (difficulty={args.difficulty})")
+  env_kwargs = tabletennis_curriculum_kwargs(args.difficulty)
+  try:
+    base_env = gym.make(args.env_id, **env_kwargs)
+  except TypeError:
+    # Some envs may not accept kwargs; fall back to default creation.
+    base_env = gym.make(args.env_id)
+  env = base_env
 
-  # Create base env and wrap with SynNoSynWrapper, as in ppo-sarl training
-  print(f"Creating environment: {args.env_id}")
-  base_env = gym.make(args.env_id)
-  env = SynNoSynWrapper(base_env, ica, pca, scaler, phi)
+  if args.use_sar:
+    print(f"Loading SAR artifacts from {args.sar_dir}...")
+    ica = joblib.load(os.path.join(args.sar_dir, "ica.pkl"))
+    pca = joblib.load(os.path.join(args.sar_dir, "pca.pkl"))
+    scaler = joblib.load(os.path.join(args.sar_dir, "scaler.pkl"))
+    phi = float(args.phi)
+    print("SAR artifacts loaded.")
+    env = SynNoSynWrapper(base_env, ica, pca, scaler, phi)
+
   checkpoint_name = os.path.splitext(os.path.basename(args.checkpoint_path))[0]
 
   try:

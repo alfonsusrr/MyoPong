@@ -1,10 +1,12 @@
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Optional, Callable
 
 import numpy as np
 import wandb
 from stable_baselines3.common.callbacks import BaseCallback
+from stable_baselines3.common.vec_env import VecNormalize
 from myosuite.utils import gym
 
 
@@ -82,8 +84,17 @@ class PeriodicVideoRecorder(BaseCallback):
           obs_vec = obs
       else:
         obs_vec = obs
+      # If the model was trained with VecNormalize, normalize observations
+      # using the statistics from the training env.
+      obs_input = obs_vec
+      try:
+        model_env = self.model.get_env()
+        if isinstance(model_env, VecNormalize):
+          obs_input = model_env.normalize_obs(obs_vec)
+      except Exception:
+        pass
 
-      action, _ = self.model.predict(obs_vec, deterministic=True)
+      action, _ = self.model.predict(obs_input, deterministic=True)
       obs, reward, done, truncated, info = env.step(action)
 
       try:
@@ -122,21 +133,35 @@ class PeriodicVideoRecorder(BaseCallback):
     # Save mp4 using imageio-ffmpeg (via moviepy or imageio)
     import imageio
 
-    # Helper to save and log
-    def save_and_log(frames, cam_suffix):
+    def _save_video(frames, cam_suffix) -> Optional[str]:
       if not frames:
-        return
+        return None
       video_path = os.path.join(
-          self.video_dir, f"rollout_{int(time.time())}_steps{self.num_timesteps}{cam_suffix}.mp4")
-      try:
-        imageio.mimwrite(video_path, frames, fps=30, macro_block_size=None)
-        if wandb.run is not None:
-          wandb.log({f"rollout/video{cam_suffix}": wandb.Video(video_path,
-                    format="mp4")}, step=self.num_timesteps)
-        if self.verbose:
-          print(f"[Video] Saved {video_path}")
-      except Exception as e:
-        print(f"Failed to save video {cam_suffix}: {e}")
+          self.video_dir,
+          f"rollout_{int(time.time())}_steps{self.num_timesteps}{cam_suffix}.mp4",
+      )
+      imageio.mimwrite(video_path, frames, fps=30, macro_block_size=None)
+      return video_path
 
-    save_and_log(frames_cam1, "_cam1")
-    save_and_log(frames_cam2, "_cam2")
+    # Save videos in parallel (encoding/I/O), then log serially (W&B thread-safety).
+    saved: List[tuple[str, str]] = []
+    tasks = [(frames_cam1, "_cam1"), (frames_cam2, "_cam2")]
+    with ThreadPoolExecutor(max_workers=2) as ex:
+      fut_to_suffix = {ex.submit(_save_video, frames, suffix): suffix for frames, suffix in tasks}
+      for fut in as_completed(fut_to_suffix):
+        suffix = fut_to_suffix[fut]
+        try:
+          path = fut.result()
+          if path is not None:
+            saved.append((suffix, path))
+            if self.verbose:
+              print(f"[Video] Saved {path}")
+        except Exception as e:
+          print(f"Failed to save video {suffix}: {e}")
+
+    if wandb.run is not None:
+      for suffix, path in saved:
+        wandb.log(
+            {f"rollout/video{suffix}": wandb.Video(path, format="mp4")},
+            step=self.num_timesteps,
+        )

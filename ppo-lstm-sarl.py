@@ -4,10 +4,12 @@ from modules.callback.progress import TqdmProgressCallback
 from modules.callback.evaluator import PeriodicEvaluator
 from modules.callback.wandb import WandbCallback
 from modules.callback.renderer import PeriodicVideoRecorder
-from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
+from modules.envs.curriculum import tabletennis_curriculum_kwargs
+from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor, VecNormalize
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.callbacks import CheckpointCallback
 from sb3_contrib import RecurrentPPO
+import torch
 import time
 from dotenv import load_dotenv
 from typing import Any, Callable
@@ -35,102 +37,7 @@ def prepare_env(env_id: str, difficulty: int = 0) -> Any:
     4: Phase 2 Mastery - Full Ranges + Friction/Dynamics Noise (The "Real" Challenge).
   """
 
-  # Default rewards (Dense shaping for initial learning)
-  default_rewards = {
-      "reach_dist": 1,
-      "palm_dist": 1,
-      "paddle_quat": 2,
-      "act_reg": 0.5,
-      "torso_up": 2,
-      "sparse": 100,
-      "solved": 1000,
-      "done": -10
-  }
-
-  # Finetuning rewards (Sparse focus for robustness)
-  finetuning_rewards = {
-      "reach_dist": 0.6,
-      "palm_dist": 0.6,
-      "paddle_quat": 1.5,
-      "act_reg": 0.5,
-      "torso_up": 2.0,
-      "sparse": 50,
-      "solved": 1200,
-      "done": -10,
-  }
-
-  # --- Constants from Docs ---
-  # Phase 1 Pos: [-1.20, -0.45, 1.50] to [-1.25, -0.50, 1.40]
-  p1_low = [-1.25, -0.50, 1.40]
-  p1_high = [-1.20, -0.45, 1.50]
-
-  # Phase 2 Pos: [-0.5, 0.50, 1.50] to [-1.25, -0.50, 1.40]
-  p2_low = [-1.25, -0.50, 1.40]
-  p2_high = [-0.5,  0.50, 1.50]
-
-  # Friction Nominal: [1.0, 0.005, 0.0001]
-  # Variations: +/- [0.1, 0.001, 0.00002]
-  fric_nom = [1.0, 0.005, 0.0001]
-  fric_delta = [0.1, 0.001, 0.00002]
-
-  fric_low = [n - d for n, d in zip(fric_nom, fric_delta)]
-  fric_high = [n + d for n, d in zip(fric_nom, fric_delta)]
-
-  curriculum_levels = {
-      # Level 0: Warmup
-      # - Fixed Position (with tiny noise to break deterministic trap)
-      # - Calculated Velocity (Guaranteed to land on table)
-      0: {
-          "ball_xyz_range": {
-              "low":  [-1.225, -0.475, 1.45],
-              "high": [-1.225, -0.475, 1.45]
-          },
-          "ball_qvel": True,
-          "weighted_reward_keys": default_rewards
-      },
-
-      # Level 1: Phase 1 Box
-      # - Position: Phase 1 specific box
-      # - Velocity: Calculated (but consistent because position range is small)
-      1: {
-          "ball_xyz_range": {"low": p1_low, "high": p1_high},
-          "ball_qvel": True,
-          "weighted_reward_keys": default_rewards
-      },
-
-      # Level 2: Phase 2 Box (Wider)
-      # - Position: Phase 2 full width
-      # - Velocity: Calculated (more variable now because pos is wider)
-      2: {
-          "ball_xyz_range": {"low": p2_low, "high": p2_high},
-          "ball_qvel": True,
-          "weighted_reward_keys": default_rewards
-      },
-
-      # Level 3: Phase 2 Spatial Expansion + Mass.
-      # Phase 2 Spatial Expansion
-      # Add Paddle Mass: 100g - 150g (0.1 - 0.15 kg)
-      3: {
-          "ball_xyz_range": {"low": p2_low, "high": p2_high},
-          "ball_qvel": True,
-          "paddle_mass_range": (0.1, 0.15),  # CORRECTED UNITS (kg)
-          "weighted_reward_keys": finetuning_rewards
-      },
-
-      # Level 4: Full Phase 2 (Advanced).
-      # Full spatial, Full velocity, Full dynamics (Mass + Friction).
-      4: {
-          "ball_xyz_range": {"low": p2_low, "high": p2_high},
-          "ball_qvel": True,
-          "paddle_mass_range": (0.1, 0.15),
-          "ball_friction_range": {"low": fric_low, "high": fric_high},
-          # Keep your noise choice if helpful
-          "qpos_noise_range": {"low": -0.02, "high": 0.02},
-          "weighted_reward_keys": finetuning_rewards
-      }
-  }
-
-  kwargs = curriculum_levels.get(difficulty, {})
+  kwargs = tabletennis_curriculum_kwargs(difficulty)
 
   try:
     env = gym.make(env_id, **kwargs)
@@ -220,6 +127,10 @@ def parse_args() -> argparse.Namespace:
                       help="Number of parallel eval envs")
   parser.add_argument("--eval-episodes", type=int, default=10,
                       help="Total eval episodes per evaluation run")
+  parser.add_argument("--n-steps", type=int, default=4096,
+                      help="Number of steps to run for each environment per update")
+  parser.add_argument("--batch-size", type=int, default=2048,
+                      help="Size of the batch for training")
   parser.add_argument("--difficulty", type=int, default=0,
                       help="Curriculum difficulty level (0-4)")
   return parser.parse_args()
@@ -227,6 +138,14 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
   args = parse_args()
+
+  # Select device: prefer CUDA if available, then MPS on Apple Silicon, else CPU.
+  if torch.cuda.is_available():
+    device = torch.device("cuda")
+    print(f"Using CUDA device for policy network: {torch.cuda.get_device_name(0)}")
+  else:
+    device = torch.device("cpu")
+    print("Using CPU device for policy network.")
 
   run_id = f"run-ppo-lstm-sarl-{time.strftime('%Y%m%d-%H%M%S')}-lvl{args.difficulty}"
 
@@ -261,7 +180,12 @@ def main() -> None:
 
   print(f"Making {len(make_env_fns)} environments")
 
-  vec_env = VecMonitor(SubprocVecEnv(make_env_fns))
+  # Training envs with monitoring + normalization
+  train_env = SubprocVecEnv(make_env_fns)
+  train_env = VecMonitor(train_env)
+  vec_env = VecNormalize(
+      train_env, training=True, norm_obs=True, norm_reward=True, clip_obs=10.0
+  )
 
   # Create Eval Envs
   make_eval_env_fns = [
@@ -277,7 +201,13 @@ def main() -> None:
       )
       for idx in range(args.eval_envs)
   ]
-  eval_vec_env = VecMonitor(SubprocVecEnv(make_eval_env_fns))
+  eval_env = SubprocVecEnv(make_eval_env_fns)
+  eval_env = VecMonitor(eval_env)
+  eval_vec_env = VecNormalize(
+      eval_env, training=False, norm_obs=True, norm_reward=False, clip_obs=10.0
+  )
+  # Share normalization statistics with training env
+  eval_vec_env.obs_rms = vec_env.obs_rms
 
   # Metrics Env (single instance)
   try:
@@ -301,7 +231,7 @@ def main() -> None:
   if args.resume_from_checkpoint:
     checkpoint_path = resolve_checkpoint_path(args.resume_from_checkpoint)
     print(f"Resuming RecurrentPPO from checkpoint: {checkpoint_path}")
-    model = RecurrentPPO.load(checkpoint_path, env=vec_env)
+    model = RecurrentPPO.load(checkpoint_path, env=vec_env, device=device)
 
     current_timesteps = model.num_timesteps
     remaining_timesteps = args.total_timesteps - current_timesteps
@@ -317,11 +247,13 @@ def main() -> None:
     model = RecurrentPPO(
         policy=args.policy,
         env=vec_env,
-        # n_steps=4096,
+        n_steps=args.n_steps,           # High batch size for stability
+        batch_size=args.batch_size,     # Large mini-batch for M4 GPU/AMX speed
         verbose=1,
         seed=args.seed,
         tensorboard_log=os.path.abspath(
             args.tensorboard_log) if args.tensorboard_log else None,
+        device=device,
         policy_kwargs=policy_kwargs,
     )
 
@@ -404,6 +336,10 @@ def main() -> None:
       metrics_env.close()
     except:
       pass
+
+    # Save VecNormalize statistics (if used) alongside the model
+    if isinstance(vec_env, VecNormalize):
+      vec_env.save(os.path.join(log_dir, "vecnormalize.pkl"))
 
     print(f"Model saved to: {final_save_path}")
     if wandb_module is not None:
