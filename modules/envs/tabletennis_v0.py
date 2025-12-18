@@ -43,6 +43,9 @@ class TableTennisEnvV0(BaseV0):
       "paddle_pos",
       "paddle_vel",
       "paddle_ori",
+      # Planner outputs (HITTER-style high-level target)
+      "target_pos",
+      "time_to_impact",
       "reach_err",
       "touching_info",
   ]
@@ -50,6 +53,8 @@ class TableTennisEnvV0(BaseV0):
       "reach_dist": 1,
       "palm_dist": 1,
       "paddle_quat": 2,
+      # Encourage tracking planner's target point
+      "planner_reach_dist": 2.0,
       "act_reg": 0.5,
       "torso_up": 2,
       # "ref_qpos_err": 1,
@@ -96,7 +101,8 @@ class TableTennisEnvV0(BaseV0):
   ):
     self.ball_xyz_range = ball_xyz_range
     self.ball_qvel = ball_qvel
-    self.ball_flight_time_scale = float(ball_flight_time_scale) if ball_flight_time_scale is not None else 1.0
+    self.ball_flight_time_scale = float(
+        ball_flight_time_scale) if ball_flight_time_scale is not None else 1.0
     self.qpos_noise_range = qpos_noise_range
     self.paddle_mass_range = paddle_mass_range
     self.ball_friction_range = ball_friction_range
@@ -146,6 +152,16 @@ class TableTennisEnvV0(BaseV0):
     obs_dict["paddle_ori"] = sim.data.body_xquat[self.id_info.paddle_bid]
     obs_dict["padde_ori_err"] = obs_dict["paddle_ori"] - self.init_paddle_quat
 
+    # ---------------- HITTER-style intercept planner ----------------
+    target_pos, time_to_impact = self.get_intercept_plan()
+    if target_pos is None or time_to_impact is None:
+      # Ball not incoming: hold position at current paddle location (zero planner error)
+      obs_dict["target_pos"] = obs_dict["paddle_pos"].copy()
+      obs_dict["time_to_impact"] = np.array([1.0], dtype=float)
+    else:
+      obs_dict["target_pos"] = np.asarray(target_pos, dtype=float)
+      obs_dict["time_to_impact"] = np.array([float(time_to_impact)], dtype=float)
+
     obs_dict["reach_err"] = obs_dict["paddle_pos"] - obs_dict["ball_pos"]
 
     obs_dict["palm_pos"] = self.sim.data.site_xpos[
@@ -168,7 +184,174 @@ class TableTennisEnvV0(BaseV0):
       obs_dict["act"] = sim.data.act[:].copy()
     return obs_dict
 
+  def get_intercept_plan(self):
+    """
+    Predicts intercept at x = +0.6 (Agent's Hitting Zone).
+    Ball moves from Opponent (-1.2) to Agent (+1.2), so Vx must be positive.
+    """
+    # 1) Current ball state
+    ball_pos = self.sim.data.site_xpos[self.id_info.ball_sid].copy()
+    ball_vel = self.sim.data.qvel[self.ball_dofadr: self.ball_dofadr + 3].copy()
+
+    # 2) Define virtual hitting plane (Agent is at x approx 1.2, table ends at 1.37)
+    # We want to intercept in front of the agent.
+    target_x = 0.6
+
+    # 3) Edge cases:
+    vx = float(ball_vel[0])
+    # FIX: Ball must be moving TOWARDS agent (Positive X)
+    if vx <= 0.1:  # Threshold to ignore stationary or moving-away balls
+      return None, None
+    # FIX: Ball must be BEFORE the target (x < 0.6)
+    if ball_pos[0] >= target_x:
+      return None, None
+
+    # 4) Time to intercept: t = (target - current) / v
+    t_intercept = (target_x - float(ball_pos[0])) / vx
+
+    if not np.isfinite(t_intercept) or t_intercept <= 0.0:
+      return None, None
+
+    # 5) Project y,z
+    g_vec = np.array(self.sim.model.opt.gravity, dtype=float)
+    future = ball_pos + ball_vel * t_intercept + 0.5 * g_vec * (t_intercept ** 2)
+    future[0] = target_x
+
+    return future, float(t_intercept)
+
+  # def get_reward_dict(self, obs_dict):
+  #   reach_dist = np.abs(np.linalg.norm(self.obs_dict["reach_err"], axis=-1))
+  #   palm_dist = np.abs(np.linalg.norm(self.obs_dict["palm_err"], axis=-1))
+  #   act_mag = (
+  #       np.linalg.norm(self.obs_dict["act"], axis=-1) / self.sim.model.na
+  #       if self.sim.model.na != 0
+  #       else 0
+  #   )
+  #   ball_pos = (
+  #       obs_dict["ball_pos"][0][0]
+  #       if obs_dict["ball_pos"].ndim == 3
+  #       else obs_dict["ball_pos"]
+  #   )
+  #   solved = evaluate_pingpong_trajectory(self.contact_trajectory) == None
+  #   paddle_quat_err = np.linalg.norm(obs_dict["padde_ori_err"], axis=-1)
+  #   torso_err = abs(
+  #       self.sim.data.qpos[
+  #           self.sim.model.jnt_qposadr[
+  #               self.sim.model.joint_name2id("flex_extension")
+  #           ]
+  #       ]
+  #   )
+  #   paddle_touch = (
+  #       obs_dict["touching_info"][0][0]
+  #       if obs_dict["touching_info"].ndim == 3
+  #       else obs_dict["touching_info"]
+  #   )
+
+  #   # Planner tracking reward: distance between paddle and planned intercept target
+  #   paddle_pos = (
+  #       obs_dict["paddle_pos"][0][0]
+  #       if obs_dict["paddle_pos"].ndim == 3
+  #       else obs_dict["paddle_pos"]
+  #   )
+  #   target_pos = (
+  #       obs_dict["target_pos"][0][0]
+  #       if obs_dict["target_pos"].ndim == 3
+  #       else obs_dict["target_pos"]
+  #   )
+  #   planner_dist = np.linalg.norm(paddle_pos - target_pos, axis=-1)
+  #   # Wider gradient to reduce sparsity / collapse early in training
+  #   planner_reach_rwd = np.exp(-1.0 * planner_dist)
+
+  #   # Reference pose reward: keep robot near initial "ready stance" to prevent collapse
+  #   # Align to the same joint subset used in observations (myo joints only).
+  #   cur_body_qpos = self.sim.data.qpos[self.id_info.myo_joint_range].copy()
+  #   init_body_qpos = self.init_qpos[self.id_info.myo_joint_range].copy()
+  #   pose_dist = np.linalg.norm(cur_body_qpos - init_body_qpos, axis=-1)
+  #   ref_pose_rwd = np.exp(-2.0 * pose_dist)
+  #   # =========== for the baseline, we provide an h5 file in which you could perform simple imitation learning ===========
+  #   # ======== uncomment to load the files and rewards =======================
+  #   # qpos_ref, qvel_ref, qpos_err, qvel_err = self.ref_traj()()
+  #   # ref_qpos_err = np.linalg.norm(qpos_err)
+  #   # ref_qvel_err = np.linalg.norm(qvel_err)
+
+  #   # --- NEW CODE START: SWING VELOCITY REWARD --- after 40M
+  #   # --- UPDATED: DIRECTIONAL SWING REWARD ---
+  #   # Goal: Reward swinging vector that aligns with the "Ideal Trajectory"
+  #   #       (From Paddle -> Opponent Table Center)
+
+  #   # 1. Define the Bullseye (Center of Opponent's side)
+  #   #    Opponent table x: [-1.37, -0.6] -> Center x approx -1.0
+  #   #    Opponent table y: [-0.76, 0.76] -> Center y = 0.0
+  #   #    Target Height z: 0.9 (Aim slightly above net)
+  #   bullseye = np.array([-1.0, 0.0, 0.9])
+
+  #   # 2. Calculate "Ideal Direction" Vector
+  #   ideal_vector = bullseye - paddle_pos
+  #   ideal_norm = np.linalg.norm(ideal_vector) + 1e-8
+  #   ideal_dir = ideal_vector / ideal_norm
+
+  #   # 3. Get Current "Swing Direction"
+  #   paddle_vel = obs_dict["paddle_vel"] if obs_dict["paddle_vel"].ndim == 1 else obs_dict["paddle_vel"][0]
+  #   speed = np.linalg.norm(paddle_vel) + 1e-8
+  #   swing_dir = paddle_vel / speed
+
+  #   # 4. Calculate Alignment (Cosine Similarity)
+  #   #    1.0 = Perfect aim, 0.0 = Perpendicular, -1.0 = Wrong way
+  #   alignment = np.dot(swing_dir, ideal_dir)
+
+  #   # 5. The Reward: Speed * Alignment
+  #   #    Only reward if moving fast (>0.5) AND generally in the right direction (>0)
+  #   #    We clip speed at 6.0 m/s to prevent exploding gradients
+  #   is_swinging = 1.0 if (speed > 0.5 and alignment > 0.2) else 0.0
+
+  #   #    We also gate this by position: only reward this when close to the ball/planner target (<30cm)
+  #   in_zone = 1.0 if planner_dist < 0.3 else 0.0
+
+  #   swing_rwd = in_zone * is_swinging * np.clip(speed, 0, 6.0) * alignment
+  #   # --- NEW CODE END ---
+
+  #   rwd_dict = collections.OrderedDict(
+  #       (
+  #           # Perform reward tuning here --
+  #           # Update Optional Keys section below
+  #           # Update reward keys (DEFAULT_RWD_KEYS_AND_WEIGHTS) accordingly to update final rewards
+  #           # Examples: Env comes pre-packaged with two keys pos_dist and rot_dist
+  #           # Optional Keys
+  #           ("reach_dist", np.exp(-1.0 * reach_dist)),
+  #           ("palm_dist", np.exp(-5.0 * palm_dist)),
+  #           ("paddle_quat", np.exp(-5 * paddle_quat_err)),
+  #           ("torso_up", np.exp(-5 * torso_err)),
+  #           ("planner_reach_dist", planner_reach_rwd),
+  #           ("ref_pose", ref_pose_rwd),
+  #           ("swing_vel", swing_rwd),
+  #           # ('ref_qpos_err', -1 * ref_qpos_err), use these for your imitation learning script
+  #           # ('ref_qvel_err', -1 * ref_qvel_err),
+  #           # Must keys
+  #           ("act_reg", -1.0 * act_mag),
+  #           ("sparse", paddle_touch[0] == 1),  # paddle_touching
+  #           ("solved", np.array([[solved]])),
+  #           ("done", np.array([[self._get_done(ball_pos[-1], solved)]])),
+  #       )
+  #   )
+
+  #   rwd_dict["dense"] = sum(
+  #       float(wt) * float(np.array(rwd_dict[key]).squeeze())
+  #       for key, wt in self.rwd_keys_wt.items()
+  #   )
+
+  #   if rwd_dict["solved"]:
+  #     self.cur_rally += 1
+  #   if rwd_dict["solved"] and self.cur_rally < self.rally_count:
+  #     rwd_dict["done"] = False
+  #     rwd_dict["solved"] = False
+  #     self.obs_dict["time"] = 0
+  #     self.sim.data.time = 0
+  #     self.contact_trajectory = []
+  #     self.relaunch_ball()
+  #   return rwd_dict
+
   def get_reward_dict(self, obs_dict):
+    # Standard components
     reach_dist = np.abs(np.linalg.norm(self.obs_dict["reach_err"], axis=-1))
     palm_dist = np.abs(np.linalg.norm(self.obs_dict["palm_err"], axis=-1))
     act_mag = (
@@ -195,28 +378,70 @@ class TableTennisEnvV0(BaseV0):
         if obs_dict["touching_info"].ndim == 3
         else obs_dict["touching_info"]
     )
-    # =========== for the baseline, we provide an h5 file in which you could perform simple imitation learning ===========
-    # ======== uncomment to load the files and rewards =======================
-    # qpos_ref, qvel_ref, qpos_err, qvel_err = self.ref_traj()()
-    # ref_qpos_err = np.linalg.norm(qpos_err)
-    # ref_qvel_err = np.linalg.norm(qvel_err)
+
+    # Planner Reach Reward
+    paddle_pos = (
+        obs_dict["paddle_pos"][0][0]
+        if obs_dict["paddle_pos"].ndim == 3
+        else obs_dict["paddle_pos"]
+    )
+    target_pos = (
+        obs_dict["target_pos"][0][0]
+        if obs_dict["target_pos"].ndim == 3
+        else obs_dict["target_pos"]
+    )
+    planner_dist = np.linalg.norm(paddle_pos - target_pos, axis=-1)
+    planner_reach_rwd = np.exp(-1.0 * planner_dist)
+
+    # Reference Pose Reward
+    cur_body_qpos = self.sim.data.qpos[self.id_info.myo_joint_range].copy()
+    init_body_qpos = self.init_qpos[self.id_info.myo_joint_range].copy()
+    pose_dist = np.linalg.norm(cur_body_qpos - init_body_qpos, axis=-1)
+    ref_pose_rwd = np.exp(-2.0 * pose_dist)
+
+    # --- UPDATED: TIME-BASED SWING REWARD (Fixes Slow Reaction) ---
+
+    # 1. Get Time to Impact (The "Clock")
+    #    obs_dict value is typically an array [t]
+    t_impact = obs_dict["time_to_impact"] if obs_dict["time_to_impact"].ndim == 1 else obs_dict["time_to_impact"][0]
+
+    # 2. The Trigger: "Anticipation"
+    #    Start swinging when impact is imminent (< 0.5s) but not passed (> 0.0s).
+    #    This gives the agent a 500ms head-start to build velocity.
+    is_time_to_swing = 1.0 if (t_impact < 0.5 and t_impact > 0.0) else 0.0
+
+    # 3. Direction & Speed (Same as before)
+    bullseye = np.array([-1.0, 0.0, 0.9])
+    ideal_vector = bullseye - paddle_pos
+    ideal_norm = np.linalg.norm(ideal_vector) + 1e-8
+    ideal_dir = ideal_vector / ideal_norm
+
+    paddle_vel = obs_dict["paddle_vel"] if obs_dict["paddle_vel"].ndim == 1 else obs_dict["paddle_vel"][0]
+    speed = np.linalg.norm(paddle_vel) + 1e-8
+    swing_dir = paddle_vel / speed
+    alignment = np.dot(swing_dir, ideal_dir)
+
+    # 4. The Reward
+    #    Now uses 'is_time_to_swing' instead of 'planner_dist < 0.3'
+    #    We pay for ANY fast movement towards the table during the countdown.
+    swing_rwd = is_time_to_swing * np.clip(speed, 0, 6.0) * alignment
+
+    # Penalty for swinging too early (optional, but helps save energy)
+    # If t > 0.6 and speed > 1.0, maybe small penalty?
+    # For now, let's just stick to rewarding the "Right Time".
+    # -------------------------------------------------------------
 
     rwd_dict = collections.OrderedDict(
         (
-            # Perform reward tuning here --
-            # Update Optional Keys section below
-            # Update reward keys (DEFAULT_RWD_KEYS_AND_WEIGHTS) accordingly to update final rewards
-            # Examples: Env comes pre-packaged with two keys pos_dist and rot_dist
-            # Optional Keys
             ("reach_dist", np.exp(-1.0 * reach_dist)),
             ("palm_dist", np.exp(-5.0 * palm_dist)),
             ("paddle_quat", np.exp(-5 * paddle_quat_err)),
             ("torso_up", np.exp(-5 * torso_err)),
-            # ('ref_qpos_err', -1 * ref_qpos_err), use these for your imitation learning script
-            # ('ref_qvel_err', -1 * ref_qvel_err),
-            # Must keys
+            ("planner_reach_dist", planner_reach_rwd),
+            ("ref_pose", ref_pose_rwd),
+            ("swing_vel", swing_rwd),
             ("act_reg", -1.0 * act_mag),
-            ("sparse", paddle_touch[0] == 1),  # paddle_touching
+            ("sparse", paddle_touch[0] == 1),
             ("solved", np.array([[solved]])),
             ("done", np.array([[self._get_done(ball_pos[-1], solved)]])),
         )
@@ -447,7 +672,8 @@ class TableTennisEnvV0(BaseV0):
 
     # Optional: slow down serves while keeping the same target zone by increasing
     # flight time (horizontal velocities scale as 1/t).
-    time_scale = float(self.ball_flight_time_scale) if hasattr(self, "ball_flight_time_scale") else 1.0
+    time_scale = float(self.ball_flight_time_scale) if hasattr(
+        self, "ball_flight_time_scale") else 1.0
     if time_scale != 1.0:
       # Guard against degenerate/invalid scaling
       time_scale = max(1e-6, time_scale)

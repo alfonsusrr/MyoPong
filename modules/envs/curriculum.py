@@ -15,13 +15,48 @@ def tabletennis_curriculum_kwargs(difficulty: int = 0) -> Dict[str, Any]:
   # Lowers 'act_reg' (effort penalty) to 0.1.
   # Essential for early training so the agent doesn't collapse to save energy
   # before it knows how to hit the ball.
+#   warmup_rewards = {
+#       "reach_dist": 1,
+#       "palm_dist": 1,
+#       "paddle_quat": 2,
+#       "act_reg": 0.1,  # <--- SIGNIFICANTLY LOWERED (Default is 0.5)
+#       "planner_reach_dist": 2.0,  # <--- ADD THIS LINE
+#       "ref_pose": 5.0,
+#       "torso_up": 2,
+#       "sparse": 100,
+#       "solved": 1000,
+#       "done": -10,
+#   }
+
+#   warmup_rewards = {
+#       # OLD: "planner_reach_dist": 5.0, "paddle_quat": 2.0
+
+#       # NEW: Balance them.
+#       "reach_dist": 1,
+#       "palm_dist": 1,
+#       "paddle_quat": 4.0,         # INCREASE: Keep the racket face steady!
+#       "act_reg": 0.1,
+#       "planner_reach_dist": 2.0,  # Lower this so it doesn't over-optimize position
+#       "ref_pose": 1.0,            # Keep low to allow movement
+#       "torso_up": 2,
+#       "sparse": 200,              # Double this to celebrate ANY contact
+#       "solved": 1000,
+#       "done": -10,
+#   }
+  
   warmup_rewards = {
+      # after 40M
+
+      # NEW: Balance them.
       "reach_dist": 1,
       "palm_dist": 1,
-      "paddle_quat": 2,
-      "act_reg": 0.1,  # <--- SIGNIFICANTLY LOWERED (Default is 0.5)
+      "paddle_quat": 4.0,         # INCREASE: Keep the racket face steady!
+      "act_reg": 0.05,            # LOWERED from 0.1. Hitting hard costs energy; make it cheap.
+      "planner_reach_dist": 2.0,  # Lower this so it doesn't over-optimize position
+      "ref_pose": 0.5,            # Lowered further. Hitting hard requires breaking stance!
+      "swing_vel": 2.0,           # <--- NEW KEY (Incentivize power)
       "torso_up": 2,
-      "sparse": 100,
+      "sparse": 200,              # Double this to celebrate ANY contact
       "solved": 1000,
       "done": -10,
   }
@@ -34,6 +69,7 @@ def tabletennis_curriculum_kwargs(difficulty: int = 0) -> Dict[str, Any]:
       "paddle_quat": 1.5,
       "act_reg": 0.5,
       "torso_up": 2.0,
+      "planner_reach_dist": 2.0,  # <--- ADD THIS LINE
       "sparse": 50,
       "solved": 1200,
       "done": -10,
@@ -77,7 +113,8 @@ def tabletennis_curriculum_kwargs(difficulty: int = 0) -> Dict[str, Any]:
           # Serve speed control (keeps target_xyz_range unchanged):
           # - 1.0 = default speed
           # - >1.0 = slower serves (longer flight time, lower horizontal velocity)
-          "ball_flight_time_scale": 1.5,
+          #   "ball_flight_time_scale": 1.5,
+          "ball_flight_time_scale": 1.0,
           # Target the strip in the middle of the table (Y = -0.1 to 0.1)
           "target_xyz_range": {
               #   "low":  [0.6, -0.1, 0.785],
