@@ -77,14 +77,14 @@ def tabletennis_curriculum_kwargs(difficulty: int = 0) -> Dict[str, Any]:
           # Serve speed control (keeps target_xyz_range unchanged):
           # - 1.0 = default speed
           # - >1.0 = slower serves (longer flight time, lower horizontal velocity)
-          "ball_flight_time_scale": 1.5,
-          # Target the strip in the middle of the table (Y = -0.1 to 0.1)
-          "target_xyz_range": {
-              #   "low":  [0.6, -0.1, 0.785],
-              #   "high": [1.2,  0.1, 0.785]
-              "low": [0.6, 0.05, 0.785],
-              "high": [1.2,  0.15, 0.785]
-          },
+        #   "ball_flight_time_scale": 1.5,
+        #   # Target the strip in the middle of the table (Y = -0.1 to 0.1)
+        #   "target_xyz_range": {
+        #       #   "low":  [0.6, -0.1, 0.785],
+        #       #   "high": [1.2,  0.1, 0.785]
+        #       "low": [0.6, 0.05, 0.785],
+        #       "high": [1.2,  0.15, 0.785]
+        #   },
           "weighted_reward_keys": warmup_rewards,
       },
       # Level 1: "Directional Training"
