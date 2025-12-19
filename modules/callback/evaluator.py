@@ -2,7 +2,6 @@ import time
 from typing import Dict, List, Any, Optional
 import numpy as np
 import wandb
-from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.vec_env import VecMonitor
 
