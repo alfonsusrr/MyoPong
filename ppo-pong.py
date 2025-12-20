@@ -61,7 +61,7 @@ def main():
         use_sde=True,              # Smooth exploration for muscle control
         sde_sample_freq=4,
         n_steps=2048,              # Collected steps per update
-        batch_size=256,            # Mini-batch size
+        batch_size=2048,            # Mini-batch size
         tensorboard_log=log_dir,
     )
 
