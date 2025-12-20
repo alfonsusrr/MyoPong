@@ -52,18 +52,22 @@ def test_reward():
     
     frames_cam1 = []
     frames_cam2 = []
+    frames_cam3 = []
     video_path_cam1 = "pong_test_render_cam1.mp4"
     video_path_cam2 = "pong_test_render_cam2.mp4"
+    video_path_cam3 = "pong_test_render_cam3.mp4"
 
     total_reward = 0
     # Let's step and see how it changes
     for i in range(200):
-        # Capture frames from both cameras
+        # Capture frames from all cameras
         try:
             frame1 = env.sim.renderer.render_offscreen(width=640, height=480, camera_id=1)
             frames_cam1.append(frame1)
             frame2 = env.sim.renderer.render_offscreen(width=640, height=480, camera_id=2)
             frames_cam2.append(frame2)
+            frame3 = env.sim.renderer.render_offscreen(width=640, height=480, camera_id=3)
+            frames_cam3.append(frame3)
         except Exception as e:
             if i == 0:
                 print(f"Warning: Rendering failed: {e}")
@@ -102,8 +106,13 @@ def test_reward():
         print(f"Saving video to {video_path_cam2}...")
         imageio.mimwrite(video_path_cam2, frames_cam2, fps=30)
         print("Video 2 saved.")
+
+    if frames_cam3:
+        print(f"Saving video to {video_path_cam3}...")
+        imageio.mimwrite(video_path_cam3, frames_cam3, fps=30)
+        print("Video 3 saved.")
     
-    if not frames_cam1 and not frames_cam2:
+    if not frames_cam1 and not frames_cam2 and not frames_cam3:
         print("No frames captured.")
 
     print(f"Total Reward: {total_reward}")

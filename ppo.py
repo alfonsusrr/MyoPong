@@ -247,6 +247,7 @@ def main() -> None:
             record_every_steps=args.render_steps,
             rollout_steps=args.rollout_steps,
             wrap_env_fn=_wrap_env_for_rendering,
+            camera_ids=[1, 2], # Default for table tennis
             verbose=1,
             # Use prepare_env so renderer follows curriculum difficulty too
             make_env_fn=lambda: prepare_env(

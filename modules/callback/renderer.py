@@ -1,7 +1,7 @@
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List, Optional, Callable
+from typing import List, Optional, Callable, Any
 
 import numpy as np
 import wandb
@@ -24,6 +24,7 @@ class PeriodicVideoRecorder(BaseCallback):
       rollout_steps: int = 500,
       wrap_env_fn: Optional[Callable] = None,
       make_env_fn: Optional[Callable] = None,
+      camera_ids: List[Any] = [1, 2],
       verbose: int = 0
   ):
     super().__init__(verbose)
@@ -33,6 +34,7 @@ class PeriodicVideoRecorder(BaseCallback):
     self.rollout_steps = rollout_steps
     self.wrap_env_fn = wrap_env_fn
     self.make_env_fn = make_env_fn
+    self.camera_ids = camera_ids
     os.makedirs(self.video_dir, exist_ok=True)
     self._last_record_step = 0
 
@@ -64,8 +66,7 @@ class PeriodicVideoRecorder(BaseCallback):
     env = self.wrap_env_fn(base_env) if self.wrap_env_fn is not None else base_env
 
     # Use a simple policy rollout for a fixed number of steps
-    frames_cam1: List[np.ndarray] = []
-    frames_cam2: List[np.ndarray] = []
+    frames_dict: Dict[Any, List[np.ndarray]] = {cam_id: [] for cam_id in self.camera_ids}
 
     obs = env.reset()
     if isinstance(obs, tuple):
@@ -101,22 +102,20 @@ class PeriodicVideoRecorder(BaseCallback):
         # Preferred path: use MuJoCo offscreen renderer if available
         # Check for sim and renderer
         if hasattr(env.unwrapped, "sim") and hasattr(env.unwrapped.sim, "renderer") and hasattr(env.unwrapped.sim.renderer, "render_offscreen"):
-          f1 = env.unwrapped.sim.renderer.render_offscreen(
-              width=640, height=480, camera_id=1)
-          f2 = env.unwrapped.sim.renderer.render_offscreen(
-              width=640, height=480, camera_id=2)
-          if f1 is not None:
-            frames_cam1.append(f1.astype(np.uint8))
-          if f2 is not None:
-            frames_cam2.append(f2.astype(np.uint8))
+          for cam_id in self.camera_ids:
+            frame = env.unwrapped.sim.renderer.render_offscreen(
+                width=640, height=480, camera_id=cam_id)
+            if frame is not None:
+              frames_dict[cam_id].append(frame.astype(np.uint8))
         else:
-          # Fallback: use Gymnasium render() API
+          # Fallback: use Gymnasium render() API (only supports one view)
           frame = env.render()
           if frame is None:
             frame = env.render(mode='rgb_array')
 
           if frame is not None:
-            frames_cam1.append(frame.astype(np.uint8))
+            # Add to first camera ID as fallback
+            frames_dict[self.camera_ids[0]].append(frame.astype(np.uint8))
       except Exception as e:
         if self.verbose:
           print(f"[Video] Rendering failed: {e}")
@@ -125,7 +124,7 @@ class PeriodicVideoRecorder(BaseCallback):
 
     env.close()
 
-    if len(frames_cam1) == 0 and len(frames_cam2) == 0:
+    if all(len(f) == 0 for f in frames_dict.values()):
       if self.verbose:
         print("[Video] No frames captured; skipping save.")
       return
@@ -133,35 +132,34 @@ class PeriodicVideoRecorder(BaseCallback):
     # Save mp4 using imageio-ffmpeg (via moviepy or imageio)
     import imageio
 
-    def _save_video(frames, cam_suffix) -> Optional[str]:
+    def _save_video(frames, cam_id) -> Optional[str]:
       if not frames:
         return None
       video_path = os.path.join(
           self.video_dir,
-          f"rollout_{int(time.time())}_steps{self.num_timesteps}{cam_suffix}.mp4",
+          f"rollout_{int(time.time())}_steps{self.num_timesteps}_cam{cam_id}.mp4",
       )
       imageio.mimwrite(video_path, frames, fps=30, macro_block_size=None)
       return video_path
 
     # Save videos in parallel (encoding/I/O), then log serially (W&B thread-safety).
-    saved: List[tuple[str, str]] = []
-    tasks = [(frames_cam1, "_cam1"), (frames_cam2, "_cam2")]
-    with ThreadPoolExecutor(max_workers=2) as ex:
-      fut_to_suffix = {ex.submit(_save_video, frames, suffix): suffix for frames, suffix in tasks}
-      for fut in as_completed(fut_to_suffix):
-        suffix = fut_to_suffix[fut]
+    saved: List[tuple[Any, str]] = []
+    with ThreadPoolExecutor(max_workers=len(self.camera_ids)) as ex:
+      fut_to_cam = {ex.submit(_save_video, frames, cam_id): cam_id for cam_id, frames in frames_dict.items()}
+      for fut in as_completed(fut_to_cam):
+        cam_id = fut_to_cam[fut]
         try:
           path = fut.result()
           if path is not None:
-            saved.append((suffix, path))
+            saved.append((cam_id, path))
             if self.verbose:
               print(f"[Video] Saved {path}")
         except Exception as e:
-          print(f"Failed to save video {suffix}: {e}")
+          print(f"Failed to save video for camera {cam_id}: {e}")
 
     if wandb.run is not None:
-      for suffix, path in saved:
+      for cam_id, path in saved:
         wandb.log(
-            {f"rollout/video{suffix}": wandb.Video(path, format="mp4")},
+            {f"rollout/video_cam{cam_id}": wandb.Video(path, format="mp4")},
             step=self.num_timesteps,
         )

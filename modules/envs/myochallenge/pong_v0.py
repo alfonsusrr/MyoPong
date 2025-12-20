@@ -13,7 +13,7 @@ import numpy as np
 from myosuite.utils import gym
 import os
 
-from myosuite.utils.quat_math import euler2quat
+from myosuite.utils.quat_math import euler2quat, rotVecQuat
 from myosuite.envs import env_base
 
 
@@ -34,10 +34,10 @@ class PongEnvV0(env_base.MujocoEnv):
 
     DEFAULT_OBS_KEYS = ['ball_pos', 'ball_vel', 'paddle_pos', "paddle_vel", 'paddle_ori', 'reach_err' , "touching_info"]
     DEFAULT_RWD_KEYS_AND_WEIGHTS = {
-        "reach_dist": 5.0,
+        "reach_dist": 0,
         "alignment_y": 10,
         "alignment_z": 10,
-        "paddle_quat": 5,
+        "paddle_quat": 10,
         "move_reg": 0.01,
         "act_reg": 0.1,
         "sparse": 100,
@@ -60,19 +60,22 @@ class PongEnvV0(env_base.MujocoEnv):
             obs_keys:list = DEFAULT_OBS_KEYS,
             ball_xyz_range = None,
             ball_qvel = None,
+            ball_flight_time_scale: float = 1.0,
             ball_friction_range = None,
             paddle_mass_range = None,
+            target_xyz_range = None,
             rally_count = 1,
             weighted_reward_keys:list = DEFAULT_RWD_KEYS_AND_WEIGHTS,
             **kwargs,
         ):
-
         self.ball_xyz_range = ball_xyz_range
         self.ball_qvel = ball_qvel
+        self.ball_flight_time_scale = float(ball_flight_time_scale) if ball_flight_time_scale is not None else 1.0
         self.qpos_noise_range = qpos_noise_range
         self.paddle_mass_range = paddle_mass_range
         self.ball_friction_range = ball_friction_range
-        
+        self.target_xyz_range = target_xyz_range
+
         # Default paddle orientation (identity in the new model as tilt is in visual child body)
         self.init_paddle_quat = np.array([1.0, 0.0, 0.0, 0.0])
         self.contact_trajectory = []
@@ -92,7 +95,7 @@ class PongEnvV0(env_base.MujocoEnv):
         super()._setup(obs_keys=obs_keys,
                     weighted_reward_keys=weighted_reward_keys,
                     frame_skip=frame_skip,
-                    normalize_act=False,
+                    normalize_act=True,
                     **kwargs,
         )
 
@@ -114,10 +117,45 @@ class PongEnvV0(env_base.MujocoEnv):
         obs_dict["ball_pos"] = sim.data.site_xpos[self.id_info.ball_sid].copy()
         obs_dict["ball_vel"] = self.get_sensor_by_name(sim.model, sim.data, "pingpong_vel_sensor").copy()
 
-        obs_dict["paddle_pos"] = sim.data.site_xpos[self.id_info.paddle_sid].copy()
+        # Use the pad geom position for more accurate alignment/reach
+        obs_dict["paddle_pos"] = sim.data.geom_xpos[self.id_info.paddle_gid].copy()
         obs_dict["paddle_vel"] = self.get_sensor_by_name(sim.model, sim.data, "paddle_vel_sensor").copy()
         obs_dict["paddle_ori"] = sim.data.body_xquat[self.id_info.paddle_bid].copy()
-        obs_dict['padde_ori_err'] = obs_dict["paddle_ori"] - self.init_paddle_quat
+
+        # Calculate target orientation based on ball velocity reflection
+        # Opponent target point (center of opponent's half)
+        opp_target = np.array([-0.8, 0.0, 0.8])
+        
+        # Desired reflection direction (unit vector from paddle to opponent target)
+        d_out = opp_target - obs_dict["paddle_pos"]
+        d_out_norm = np.linalg.norm(d_out)
+        if d_out_norm > 1e-6:
+            d_out /= d_out_norm
+        else:
+            d_out = np.array([-1.0, 0.0, 0.0])
+
+        # Incoming ball direction (unit vector)
+        d_in = obs_dict["ball_vel"].copy()
+        d_in_norm = np.linalg.norm(d_in)
+        if d_in_norm > 1e-6:
+            d_in /= d_in_norm
+        else:
+            d_in = np.array([1.0, 0.0, 0.0]) # Assume ball is coming towards paddle
+
+        # Ideal paddle normal (bisects the angle between -d_in and d_out)
+        # Reflection law: n is parallel to (d_out - d_in)
+        n_ideal = d_out - d_in
+        n_ideal_norm = np.linalg.norm(n_ideal)
+        if n_ideal_norm > 1e-6:
+            n_ideal /= n_ideal_norm
+        else:
+            n_ideal = np.array([-1.0, 0.0, 0.0])
+
+        # Current paddle normal (assume paddle face normal is [-1, 0, 0] in local frame)
+        n_curr = rotVecQuat(np.array([-1.0, 0.0, 0.0]), obs_dict["paddle_ori"])
+        
+        # Orientation error as the vector difference between current and ideal normals
+        obs_dict['paddle_ori_err'] = n_curr - n_ideal
 
         obs_dict['reach_err'] = obs_dict['paddle_pos'] - obs_dict['ball_pos']
 
@@ -148,16 +186,24 @@ class PongEnvV0(env_base.MujocoEnv):
         err_z = np.abs(reach_err[..., 2])
         
         # Closer ball = higher weight for YZ alignment
-        alignment_w = 1.0 / (1.0 + 2 * np.abs(err_x))
+        alignment_w = 1.0 / (1.0 + np.abs(err_x))
         
         # Mask for ball passing paddle (no reward after ball passes paddle)
-        active_mask = (err_x < 0).astype(float)
+        # Use a small buffer (0.05m) to ensure reward persists during the contact phase
+        active_mask = (err_x > -0.05).astype(float)
         
         # Check if ball has hit our table
         has_bounced = any(PingpongContactLabels.OWN in s for s in self.contact_trajectory)
         
-        alignment_y = active_mask * alignment_w * np.exp(-5.0 * err_y)
-        alignment_z = active_mask * alignment_w * np.exp(-5.0 * err_z) if has_bounced else 0.0
+        # Center-based alignment: Scale error by paddle pad radius (0.093m)
+        # We use a Gaussian-like decay to provide a smoother gradient and strong center priority
+        paddle_radius = 0.093
+        alignment_y = active_mask * alignment_w * np.exp(-3.0 * (err_y / paddle_radius)**2)
+        alignment_z = active_mask * alignment_w * np.exp(-3.0 * (err_z / paddle_radius)**2) if has_bounced else 0.0
+
+        # Debug print (throttled)
+        # if self.sim.data.time % 0.1 < self.sim.model.opt.timestep:
+        #     print(f"Time: {self.sim.data.time:.2f} | alignment_y: {float(alignment_y):.4f}, alignment_z: {float(alignment_z):.4f}, err_x: {float(err_x):.4f}")
 
         # (1) Stability rewards
         paddle_vel = np.linalg.norm(obs_dict['paddle_vel'], axis=-1)
@@ -172,14 +218,14 @@ class PongEnvV0(env_base.MujocoEnv):
 
         ball_pos = obs_dict["ball_pos"]
         solved = evaluate_pingpong_trajectory(self.contact_trajectory) == None
-        paddle_quat_err = np.linalg.norm(obs_dict['padde_ori_err'], axis=-1)
+        paddle_quat_err = np.linalg.norm(obs_dict['paddle_ori_err'], axis=-1)
         paddle_touch = obs_dict['touching_info'][..., 0]
 
         rwd_dict = collections.OrderedDict((
             ('reach_dist', active_mask * np.exp(-1. * reach_dist)),
             ('alignment_y', alignment_y),
             ('alignment_z', alignment_z),
-            ('paddle_quat', np.exp(-5. * paddle_quat_err)),
+            ('paddle_quat', active_mask * np.exp(-5. * paddle_quat_err)),
             ('move_reg', -1.*(0.1 * paddle_vel + 0.1 * paddle_ang_vel)), # Reduced velocity penalty
             ('act_reg', -1. * act_mag),
             ('sparse', np.array([paddle_touch > 0])), 
@@ -287,9 +333,14 @@ class PongEnvV0(env_base.MujocoEnv):
             reset_qpos_local = reset_qpos if reset_qpos is not None else self.init_qpos
 
         if self.ball_qvel:            
-            v_bounds = self.cal_ball_qvel(ball_pos)
-            v_low, v_high = v_bounds[1], v_bounds[0]
-            ball_vel = self.np_random.uniform(low=v_low, high=v_high)
+            if isinstance(self.ball_qvel, dict):
+                v_low = self.ball_qvel.get("low", [-0.1] * 3)
+                v_high = self.ball_qvel.get("high", [0.1] * 3)
+                ball_vel = self.np_random.uniform(low=v_low, high=v_high)
+            else:
+                v_bounds = self.cal_ball_qvel(ball_pos)
+                v_low, v_high = v_bounds[1], v_bounds[0]
+                ball_vel = self.np_random.uniform(low=v_low, high=v_high)
             self.init_qvel[self.ball_dofadr : self.ball_dofadr + 3] = ball_vel
         
         # Call MujocoEnv.reset directly to avoid BaseV0 muscle logic
@@ -298,8 +349,12 @@ class PongEnvV0(env_base.MujocoEnv):
         return obs
 
     def cal_ball_qvel(self, ball_qpos):
-        table_upper = [1.35, 0.70, 0.785] 
-        table_lower = [0.5, -0.60, 0.785]
+        if self.target_xyz_range is not None:
+            table_upper = self.target_xyz_range["high"]
+            table_lower = self.target_xyz_range["low"]
+        else:
+            table_upper = [1.35, 0.70, 0.785] 
+            table_lower = [0.5, -0.60, 0.785]
         gravity = 9.81
         v_z = self.np_random.uniform(*(-0.1, 0.1))
 
@@ -311,6 +366,13 @@ class PongEnvV0(env_base.MujocoEnv):
         if discriminant < 0:
             discriminant = 0
         t = (-b - discriminant**0.5) / (2 * a)
+
+        time_scale = float(self.ball_flight_time_scale) if hasattr(self, "ball_flight_time_scale") else 1.0
+        if time_scale != 1.0:
+            time_scale = max(1e-6, time_scale)
+            t_scaled = t * time_scale
+            v_z = (table_upper[2] - ball_qpos[2] - a * (t_scaled**2)) / t_scaled
+            t = t_scaled
 
         v_upper = [(table_upper[i] - ball_qpos[i]) / t for i in range(2)]
         v_lower = [(table_lower[i] - ball_qpos[i]) / t for i in range(2)]
@@ -326,16 +388,27 @@ class PongEnvV0(env_base.MujocoEnv):
             self.init_qpos[self.ball_posadr: self.ball_posadr + 3] = ball_pos
 
         if self.ball_qvel:
-            v_bounds = self.cal_ball_qvel(ball_pos)
-            v_low, v_high = v_bounds[1], v_bounds[0]
-            ball_vel[:3] = self.np_random.uniform(low=v_low, high=v_high)
+            if isinstance(self.ball_qvel, dict):
+                v_low = self.ball_qvel.get("low", [-0.1] * 3)
+                v_high = self.ball_qvel.get("high", [0.1] * 3)
+                ball_vel[:3] = self.np_random.uniform(low=v_low, high=v_high)
+            else:
+                v_bounds = self.cal_ball_qvel(ball_pos)
+                v_low, v_high = v_bounds[1], v_bounds[0]
+                ball_vel[:3] = self.np_random.uniform(low=v_low, high=v_high)
             self.init_qvel[self.ball_dofadr: self.ball_dofadr + 3] = ball_vel[:3]
         self.sim.data.qpos[self.ball_posadr: self.ball_posadr + 3] = ball_pos
         self.sim.data.qvel[self.ball_dofadr: self.ball_dofadr + 6] = ball_vel
 
     def step(self, a, **kwargs):
-        # Clip action to our defined action space based on XML ctrlrange
-        a = np.clip(a, self.action_space.low, self.action_space.high)
+        if self.normalize_act:
+            # Map [-1, 1] to ctrlrange
+            a = np.clip(a, -1.0, 1.0)
+            ctrlrange = self.sim.model.actuator_ctrlrange
+            a = (a + 1.0) / 2.0 * (ctrlrange[:, 1] - ctrlrange[:, 0]) + ctrlrange[:, 0]
+        else:
+            # Clip action to our defined action space based on XML ctrlrange
+            a = np.clip(a, self.action_space.low, self.action_space.high)
         return super().step(a, **kwargs)
 
 
