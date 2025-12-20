@@ -13,7 +13,7 @@ from modules.envs.curriculum import tabletennis_curriculum_kwargs
 def main():
     # 1. Configuration
     env_id = "myoChallengePongP0-v0"
-    total_timesteps = 1_000_000
+    total_timesteps = 2_000_000
     seed = 42
     run_id = f"pong-ppo-{time.strftime('%Y%m%d-%H%M%S')}"
     log_dir = os.path.join("runs", "pong_ppo_simple", run_id)
@@ -30,7 +30,7 @@ def main():
             "env_id": env_id,
             "total_timesteps": total_timesteps,
             "seed": seed,
-            "num_envs": 8,
+            "num_envs": 12,
         },
     )
 
@@ -39,10 +39,13 @@ def main():
     def make_env():
         # Get curriculum kwargs for ball randomization (ball_xyz_range, ball_qvel)
         kwargs = tabletennis_curriculum_kwargs(difficulty=3)
+
+        # remove weighted reward keys
+        kwargs.pop('weighted_reward_keys', None)
         env = gym.make(env_id, **kwargs)
         return env
 
-    env = DummyVecEnv([make_env for _ in range(8)])
+    env = DummyVecEnv([make_env for _ in range(12)])
 
     env = VecMonitor(env)
     # VecNormalize is crucial for many MyoSuite environments due to observation/reward scales
@@ -66,7 +69,7 @@ def main():
     video_recorder = PeriodicVideoRecorder(
         video_dir=os.path.join(log_dir, "videos"),
         env_id=env_id,
-        record_every_steps=500000,
+        record_every_steps=100000,
         rollout_steps=200,
     )
 

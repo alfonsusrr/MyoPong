@@ -66,6 +66,7 @@ class PongEnvV0(env_base.MujocoEnv):
             weighted_reward_keys:list = DEFAULT_RWD_KEYS_AND_WEIGHTS,
             **kwargs,
         ):
+
         self.ball_xyz_range = ball_xyz_range
         self.ball_qvel = ball_qvel
         self.qpos_noise_range = qpos_noise_range
