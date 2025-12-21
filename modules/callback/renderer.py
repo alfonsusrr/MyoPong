@@ -1,7 +1,7 @@
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List, Optional, Callable, Any
+from typing import List, Optional, Callable, Any, Dict
 
 import numpy as np
 import wandb

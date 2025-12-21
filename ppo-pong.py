@@ -54,8 +54,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--difficulty", type=int, default=3, help="Curriculum difficulty (0-4)")
     parser.add_argument("--log-dir", type=str, default=os.path.join("runs", "pong_ppo_simple"), help="Log directory")
     parser.add_argument("--checkpoint-freq", type=int, default=500_000, help="Checkpoint frequency")
-    parser.add_argument("--eval-freq", type=int, default=10_000, help="Evaluation frequency")
-    parser.add_argument("--render-steps", type=int, default=200_000, help="Video recording frequency")
+    parser.add_argument("--eval-freq", type=int, default=50_000, help="Evaluation frequency")
+    parser.add_argument("--render-steps", type=int, default=100_000, help="Video recording frequency")
     parser.add_argument("--resume-from-checkpoint", type=str, default=None, help="Path to checkpoint to resume from")
     parser.add_argument("--wandb-project", type=str, default="myosuite-ghost-pong", help="W&B project name")
     parser.add_argument("--wandb-run-id", type=str, default=None, help="W&B run ID to resume")
@@ -149,7 +149,7 @@ def main():
             seed=seed,
             use_sde=True,
             sde_sample_freq=4,
-            n_steps=args.n_steps,
+            n_steps=args.n_steps,   
             batch_size=args.batch_size,
             tensorboard_log=log_dir,
         )

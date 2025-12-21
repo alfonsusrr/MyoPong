@@ -14,9 +14,10 @@ def test_reward():
     
     # Define randomization ranges matching tabletennis curriculum difficulty 3
     # These are the same as used in ppo-pong.py
-    ball_xyz_range = {'high': [-0.8, 0.5, 1.5], 'low': [-1.25, -0.5, 1.4]}
+    # ball_xyz_range = {'high': [-0.8, 0.5, 1.5], 'low': [-1.25, -0.5, 1.4]}
     
-    env = gym.make(env_id, ball_xyz_range=ball_xyz_range, ball_qvel=True)
+    # env = gym.make(env_id, ball_xyz_range=ball_xyz_range, ball_qvel=True)
+    env = gym.make(env_id)
     env.reset()
     
     sim = env.sim
@@ -59,23 +60,8 @@ def test_reward():
 
     total_reward = 0
     # Let's step and see how it changes
-    for i in range(200):
-        # Capture frames from all cameras
-        try:
-            frame1 = env.sim.renderer.render_offscreen(width=640, height=480, camera_id=1)
-            frames_cam1.append(frame1)
-            frame2 = env.sim.renderer.render_offscreen(width=640, height=480, camera_id=2)
-            frames_cam2.append(frame2)
-            frame3 = env.sim.renderer.render_offscreen(width=640, height=480, camera_id=3)
-            frames_cam3.append(frame3)
-        except Exception as e:
-            if i == 0:
-                print(f"Warning: Rendering failed: {e}")
-
-        # Move the paddle toward the net (X) and side (Y)
-        # With normalize_act=True, valid ranges are [-1, 1] for all axes.
-        # -1 maps to min ctrlrange, 1 maps to max ctrlrange.
-        # Example: action = [0, 0, 0] is the center of the workspace.
+    for i in range(100):
+        # ... (rendering code omitted for brevity in search_replace) ...
         action = np.array([-0.5, 0.7, 0.6, 0.0, 0.0, 0.0])
         
         step_results = env.step(action)
@@ -89,9 +75,31 @@ def test_reward():
         obs_dict = env.unwrapped.get_obs_dict(env.sim)
         curr_ball_pos = obs_dict['ball_pos']
         curr_paddle_pos = obs_dict['paddle_pos']
-        ori_err_norm = np.linalg.norm(obs_dict['paddle_ori_err'])
+        ball_vel = obs_dict["ball_vel"]
         
-        print(f"Step {i+1}: Ball: {curr_ball_pos}, Paddle: {curr_paddle_pos}, Ori Err: {ori_err_norm:.4f}, Reward: {rwd:.4f}")
+        # Calculate n_curr manually to see where it's pointing
+        paddle_ori = obs_dict["paddle_ori"]
+        
+        print(f"Step {i+1}:")
+        print(f"  Ball Pos: {curr_ball_pos}")
+        print(f"  Ball Vel: {ball_vel}")
+        print(f"  Paddle Pos: {curr_paddle_pos}")
+        print(f"  Paddle Ori (Quat): {paddle_ori}")
+        print(f"  Step Reward: {rwd:.4f}")
+
+        rwd_dict = env.unwrapped.get_reward_dict(obs_dict)
+
+        for key, value in rwd_dict.items():
+            print(f"  {key}: {np.array(value).squeeze():.4f}", end= " | ")
+        print()
+
+        frame_cam1 = env.sim.renderer.render_offscreen(width=640, height=480, camera_id=1)
+        frames_cam1.append(frame_cam1)
+        frame_cam2 = env.sim.renderer.render_offscreen(width=640, height=480, camera_id=2)
+        frames_cam2.append(frame_cam2)
+        frame_cam3 = env.sim.renderer.render_offscreen(width=640, height=480, camera_id=3)
+        frames_cam3.append(frame_cam3)
+
         total_reward += rwd
         if done:
             print(f"Done at step {i+1}")

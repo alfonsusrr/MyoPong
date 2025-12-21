@@ -32,14 +32,14 @@ class PongEnvV0(env_base.MujocoEnv):
         L4DC-2019 | https://sites.google.com/view/myosuite
     """
 
-    DEFAULT_OBS_KEYS = ['ball_pos', 'ball_vel', 'paddle_pos', "paddle_vel", 'paddle_ori', 'reach_err' , "touching_info"]
+    DEFAULT_OBS_KEYS = ['ball_pos', 'ball_vel', 'paddle_pos', "paddle_vel", 'paddle_ori', 'reach_err' , "touching_info", "pred_ball_pos", "paddle_ori_ideal"]
     DEFAULT_RWD_KEYS_AND_WEIGHTS = {
         "reach_dist": 0,
-        "alignment_y": 10,
-        "alignment_z": 10,
-        "paddle_quat": 10,
-        "move_reg": 0.01,
-        "act_reg": 0.1,
+        "alignment_y": 5,
+        "alignment_z": 5,
+        "paddle_quat": 5,
+        "move_reg": 0.1,
+        "act_reg": 1.0,
         "sparse": 100,
         "solved": 1000,
         'done': -10
@@ -55,7 +55,7 @@ class PongEnvV0(env_base.MujocoEnv):
 
 
     def _setup(self,
-            frame_skip: int = 10,
+            frame_skip: int = 5,
             qpos_noise_range = None, # Noise in joint space for initialization
             obs_keys:list = DEFAULT_OBS_KEYS,
             ball_xyz_range = None,
@@ -122,42 +122,53 @@ class PongEnvV0(env_base.MujocoEnv):
         obs_dict["paddle_vel"] = self.get_sensor_by_name(sim.model, sim.data, "paddle_vel_sensor").copy()
         obs_dict["paddle_ori"] = sim.data.body_xquat[self.id_info.paddle_bid].copy()
 
-        # Calculate target orientation based on ball velocity reflection
-        # Opponent target point (center of opponent's half)
-        opp_target = np.array([-0.8, 0.0, 0.8])
-        
-        # Desired reflection direction (unit vector from paddle to opponent target)
-        d_out = opp_target - obs_dict["paddle_pos"]
-        d_out_norm = np.linalg.norm(d_out)
-        if d_out_norm > 1e-6:
-            d_out /= d_out_norm
-        else:
-            d_out = np.array([-1.0, 0.0, 0.0])
-
-        # Incoming ball direction (unit vector)
-        d_in = obs_dict["ball_vel"].copy()
-        d_in_norm = np.linalg.norm(d_in)
-        if d_in_norm > 1e-6:
-            d_in /= d_in_norm
-        else:
-            d_in = np.array([1.0, 0.0, 0.0]) # Assume ball is coming towards paddle
-
-        # Ideal paddle normal (bisects the angle between -d_in and d_out)
-        # Reflection law: n is parallel to (d_out - d_in)
-        n_ideal = d_out - d_in
-        n_ideal_norm = np.linalg.norm(n_ideal)
-        if n_ideal_norm > 1e-6:
-            n_ideal /= n_ideal_norm
-        else:
-            n_ideal = np.array([-1.0, 0.0, 0.0])
-
-        # Current paddle normal (assume paddle face normal is [-1, 0, 0] in local frame)
-        n_curr = rotVecQuat(np.array([-1.0, 0.0, 0.0]), obs_dict["paddle_ori"])
-        
-        # Orientation error as the vector difference between current and ideal normals
-        obs_dict['paddle_ori_err'] = n_curr - n_ideal
-
         obs_dict['reach_err'] = obs_dict['paddle_pos'] - obs_dict['ball_pos']
+
+        # Predictive ball position at paddle's X-plane
+        err_x = obs_dict['reach_err'][..., 0]
+        ball_vel = obs_dict['ball_vel']
+        ball_pos = obs_dict['ball_pos']
+        paddle_pos = obs_dict['paddle_pos']
+
+        # Time for ball to reach paddle's X-plane
+        dt = np.divide(err_x, ball_vel[..., 0], out=np.zeros_like(err_x), where=ball_vel[..., 0] > 0.5)
+        dt = np.clip(dt, 0, 1.5) 
+        
+        # Predicted ball position (ballistic)
+        pred_ball_y = ball_pos[..., 1] + ball_vel[..., 1] * dt
+        pred_ball_z = ball_pos[..., 2] + ball_vel[..., 2] * dt - 0.5 * 9.81 * dt**2
+        obs_dict['pred_ball_pos'] = np.stack([paddle_pos[..., 0], pred_ball_y, pred_ball_z], axis=-1)
+
+        # Ideal paddle normal (Reflection law)
+        opp_target = np.array([-0.7, 0.0, 0.8])
+        d_out = opp_target - paddle_pos
+        d_out_norm = np.linalg.norm(d_out, axis=-1, keepdims=True)
+        d_out = np.divide(d_out, d_out_norm, out=np.array([-1.0, 0.0, 0.0]), where=d_out_norm > 1e-6)
+
+        d_in = ball_vel.copy()
+        d_in_norm = np.linalg.norm(d_in, axis=-1, keepdims=True)
+        d_in = np.divide(d_in, d_in_norm, out=np.array([1.0, 0.0, 0.0]), where=d_in_norm > 1e-6)
+
+        n_ideal = d_out - d_in
+        n_ideal_norm = np.linalg.norm(n_ideal, axis=-1, keepdims=True)
+        n_ideal = np.divide(n_ideal, n_ideal_norm, out=np.array([-1.0, 0.0, 0.0]), where=n_ideal_norm > 1e-6)
+        obs_dict['n_ideal'] = n_ideal
+
+        # Convert n_ideal to a quaternion (orientation that aligns [-1, 0, 0] with n_ideal)
+        a = np.array([-1.0, 0.0, 0.0])
+        b = n_ideal.squeeze()
+        
+        # Standard shortest arc rotation between two unit vectors
+        dot = np.dot(a, b)
+        if dot < -0.999999: # Vectors are opposite
+            paddle_ori_ideal = np.array([0.0, 0.0, 1.0, 0.0]) 
+        else:
+            w = 1.0 + dot
+            v = np.cross(a, b)
+            paddle_ori_ideal = np.array([w, v[0], v[1], v[2]])
+            paddle_ori_ideal /= np.linalg.norm(paddle_ori_ideal)
+        
+        obs_dict['paddle_ori_ideal'] = paddle_ori_ideal
 
         # Contact tracking for rewards and termination
         this_model = sim.model
@@ -176,41 +187,56 @@ class PongEnvV0(env_base.MujocoEnv):
 
 
     def get_reward_dict(self, obs_dict):
-        reach_err = self.obs_dict['reach_err']
+        reach_err = obs_dict['reach_err']
         reach_dist = np.linalg.norm(reach_err, axis=-1)
+        err_x = reach_err[..., 0] 
 
-        # (2) Alignment reward: YZ error weighted by X closeness
-        # Height (Z) and Left-Right (Y) alignment
-        err_x = reach_err[..., 0] # paddle_x - ball_x
-        err_y = np.abs(reach_err[..., 1])
-        err_z = np.abs(reach_err[..., 2])
+        # Predicted alignment errors
+        pred_err_y = np.abs(obs_dict['paddle_pos'][..., 1] - obs_dict['pred_ball_pos'][..., 1])
+        pred_err_z = np.abs(obs_dict['paddle_pos'][..., 2] - obs_dict['pred_ball_pos'][..., 2])
         
         # Closer ball = higher weight for YZ alignment
-        alignment_w = 1.0 / (1.0 + np.abs(err_x))
+        ball_closeness_weight = 1.0 / (1.0 + 2 * np.abs(err_x))
         
         # Mask for ball passing paddle (no reward after ball passes paddle)
-        # Use a small buffer (0.05m) to ensure reward persists during the contact phase
         active_mask = (err_x > -0.05).astype(float)
         
         # Check if ball has hit our table
         has_bounced = any(PingpongContactLabels.OWN in s for s in self.contact_trajectory)
         
-        # Center-based alignment: Scale error by paddle pad radius (0.093m)
-        # We use a Gaussian-like decay to provide a smoother gradient and strong center priority
-        paddle_radius = 0.093
-        alignment_y = active_mask * alignment_w * np.exp(-3.0 * (err_y / paddle_radius)**2)
-        alignment_z = active_mask * alignment_w * np.exp(-3.0 * (err_z / paddle_radius)**2) if has_bounced else 0.0
+        # Check if ball has already hit the paddle
+        has_hit_paddle = any(PingpongContactLabels.PADDLE in s for s in self.contact_trajectory)
+        
+        # Combined active mask: ball is in front of paddle AND has not been hit yet
+        active_alignment_mask = active_mask * (1.0 - float(has_hit_paddle))
 
-        # Debug print (throttled)
-        # if self.sim.data.time % 0.1 < self.sim.model.opt.timestep:
-        #     print(f"Time: {self.sim.data.time:.2f} | alignment_y: {float(alignment_y):.4f}, alignment_z: {float(alignment_z):.4f}, err_x: {float(err_x):.4f}")
+        # Center-based alignment
+        alignment_y = active_alignment_mask * ball_closeness_weight * np.exp(-3.0 * pred_err_y)
+        alignment_z = active_alignment_mask * ball_closeness_weight * np.exp(-5.0 * pred_err_z) if has_bounced else 0.0
 
-        # (1) Stability rewards
+        # Orientation error
+        n_ideal = obs_dict['n_ideal']
+        paddle_ori = obs_dict["paddle_ori"]
+        if paddle_ori.ndim == 1:
+            n_curr = rotVecQuat(np.array([-1.0, 0.0, 0.0]), paddle_ori)
+        else:
+            n_curr = np.array([rotVecQuat(np.array([-1.0, 0.0, 0.0]), q.flatten()) for q in paddle_ori.reshape(-1, 4)])
+            if paddle_ori.ndim == 2 and paddle_ori.shape[0] == 1:
+                n_curr = n_curr[0]
+        
+        paddle_ori_err = n_curr - n_ideal.squeeze()
+        paddle_quat_err = np.linalg.norm(paddle_ori_err, axis=-1)
+        paddle_quat_reward = active_alignment_mask * ball_closeness_weight * np.exp(-5.0 * paddle_quat_err) if has_bounced else 0.0
+
+        # Stability rewards
         paddle_vel = np.linalg.norm(obs_dict['paddle_vel'], axis=-1)
 
-        # Angular velocity from sim data (handle potential batch dimension)
+        # Angular velocity from sim data 
         paddle_ang_vel_raw = self.sim.data.qvel[self.paddle_dofadr+3 : self.paddle_dofadr+6]
         paddle_ang_vel = np.linalg.norm(paddle_ang_vel_raw)
+
+        # Smooth movement regularizer: quadratic for small jitters, logarithmic for large movements.
+        move_reg = -1.0 * np.log(1.0 + paddle_vel + 0.5 * paddle_ang_vel)
         
         # Action Regularization (energy usage)
         # Using control input if available
@@ -218,15 +244,14 @@ class PongEnvV0(env_base.MujocoEnv):
 
         ball_pos = obs_dict["ball_pos"]
         solved = evaluate_pingpong_trajectory(self.contact_trajectory) == None
-        paddle_quat_err = np.linalg.norm(obs_dict['paddle_ori_err'], axis=-1)
         paddle_touch = obs_dict['touching_info'][..., 0]
 
         rwd_dict = collections.OrderedDict((
             ('reach_dist', active_mask * np.exp(-1. * reach_dist)),
             ('alignment_y', alignment_y),
             ('alignment_z', alignment_z),
-            ('paddle_quat', active_mask * np.exp(-5. * paddle_quat_err)),
-            ('move_reg', -1.*(0.1 * paddle_vel + 0.1 * paddle_ang_vel)), # Reduced velocity penalty
+            ('paddle_quat', paddle_quat_reward),
+            ('move_reg', move_reg), 
             ('act_reg', -1. * act_mag),
             ('sparse', np.array([paddle_touch > 0])), 
             ('solved', np.array([[solved]])),
