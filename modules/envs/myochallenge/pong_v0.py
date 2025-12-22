@@ -366,7 +366,7 @@ class PongEnvV0(env_base.MujocoEnv):
 
         # --- Dynamic target and normal calculation (Lob/Ballistic) ---
         # Target a point deep in the opponent's court (high arc, safe landing)
-        target_x = -1.5
+        target_x = -1.8
         target_y = 0.0
         target_z = 1.0 # Default "safe" height
 
@@ -414,8 +414,8 @@ class PongEnvV0(env_base.MujocoEnv):
         target_z_required = p_z + np.divide(h_virt_net - p_z, ratio_net, out=np.zeros_like(p_x), where=np.abs(ratio_net) > 1e-6)
         
         # Use the higher of default or calculated required z
-        # Also clamp to reasonable max to prevent shooting at the ceiling (e.g. 4.0m)
-        final_target_z = np.clip(np.maximum(target_z, target_z_required), 0.0, 4.0)
+        # Also clamp to reasonable max to prevent shooting at the ceiling (e.g. 3.0m)
+        final_target_z = np.clip(np.maximum(target_z, target_z_required), 0.0, 3.0)
         
         if final_target_z.ndim == 0:
              opp_target = np.array([target_x, target_y, float(final_target_z)])
@@ -427,40 +427,12 @@ class PongEnvV0(env_base.MujocoEnv):
         d_out = opp_target - pred_ball_pos
         d_out = _safe_unit(d_out, np.array([-1.0, 0.0, 0.0]))
 
-        # Relative velocity logic for moving paddle
-        if paddle_vel is None:
-            # Handle both single and batch cases for default
-            if pred_ball_vel.ndim == 1:
-                paddle_vel = np.zeros(3)
-            else:
-                paddle_vel = np.zeros_like(pred_ball_vel)
-        
-        # v_rel_in = ball_vel - paddle_vel (relative velocity at impact)
-        v_rel_in = pred_ball_vel - paddle_vel
-        v_rel_in_mag = np.linalg.norm(v_rel_in, axis=-1, keepdims=True)
-        
-        # We want v_ball_out = beta * d_out
-        # Energy conservation: |v_ball_out - paddle_vel| = |v_rel_in|
-        # |beta * d_out - paddle_vel|^2 = v_rel_in_mag^2
-        # beta^2 - 2*beta*(d_out . paddle_vel) + |paddle_vel|^2 - v_rel_in_mag^2 = 0
-        
-        d_out_dot_vp = np.sum(d_out * paddle_vel, axis=-1, keepdims=True)
-        vp_mag_sq = np.sum(paddle_vel**2, axis=-1, keepdims=True)
-        
-        # Quadratic: beta^2 + b*beta + c = 0
-        # b = -2 * d_out_dot_vp
-        # c = vp_mag_sq - v_rel_in_mag^2
-        
-        discriminant = d_out_dot_vp**2 - vp_mag_sq + v_rel_in_mag**2
-        discriminant = np.maximum(discriminant, 0.0)
-        
-        # Speed of ball after impact in world frame (positive root)
-        beta = d_out_dot_vp + np.sqrt(discriminant)
-        
-        v_ball_out = beta * d_out
-        
-        # Normal is parallel to change in velocity (Impulse direction)
-        n_ideal = _safe_unit(v_ball_out - pred_ball_vel, np.array([-1.0, 0.0, 0.0]))
+        # Ideal paddle normal (Reflection law)
+        # Since the paddle is stable (low velocity), we use the stationary reflection law:
+        # The ideal normal n bisects the angle between the incoming velocity direction
+        # and the desired outgoing direction.
+        d_in = _safe_unit(pred_ball_vel, np.array([1.0, 0.0, 0.0]))
+        n_ideal = _safe_unit(d_out - d_in, np.array([-1.0, 0.0, 0.0]))
 
         # Ensure normal points roughly towards -X (paddle facing direction in this model)
         flip = (n_ideal[..., 0] > 0.0)

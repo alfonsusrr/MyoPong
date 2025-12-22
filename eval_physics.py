@@ -31,76 +31,67 @@ def make_env(env_id: str, difficulty: int, seed: int):
         return env
     return _init
 
-def heuristic_policy(obs_vec, ctrl_min, ctrl_max, last_actions=None, alpha=0.2):
+def heuristic_policy(obs_vec, ctrl_min, ctrl_max, last_actions, frozen_actions):
     """
-    Heuristic policy logic from pong_test.py
+    Improved heuristic policy with slew rate limiting and impact stabilization.
     obs_vec: (N_envs, 32)
     """
-    # Indices based on DEFAULT_OBS_KEYS in pong_v0.py:
-    # 0:3   ball_pos
-    # 3:6   ball_vel
-    # 6:9   paddle_pos
-    # 9:12  paddle_vel
-    # 12:16 paddle_ori (quat)
-    # 16:19 reach_err
-    # 19:25 touching_info (6)
-    # 25:28 pred_ball_pos
-    # 28:32 paddle_ori_ideal (quat)
+    # 0:3 ball_pos, 3:6 ball_vel, 6:9 paddle_pos, 9:12 paddle_vel
+    ball_pos_x = obs_vec[:, 0]
+    ball_vel_x = obs_vec[:, 3]
+    paddle_touch = obs_vec[:, 19]
     
-    # Extract predicted ball position and ideal paddle orientation from observations
-    # Note: These are already calculated by the environment's get_obs_dict
+    # Extract pre-calculated targets from observations
     pred_ball_pos = obs_vec[:, 25:28]
     paddle_ori_ideal = obs_vec[:, 28:32]
     
-    # Paddle offset in body frame (calculated from check_paddle.py)
+    # Paddle offset in body frame
     paddle_offset_body_frame = np.array([-5.5743e-05, 2.0686e-02, 6.6874e-02])
-    
-    # Position Control
-    # base_pos matches the one in pong_test.py
     base_pos = np.array([1.8, 0.5, 1.13])
     
-    actions_pos = []
-    actions_rot = []
-    pos_min = ctrl_min[:3]
-    pos_max = ctrl_max[:3]
-    rot_min = ctrl_min[3:6]
-    rot_max = ctrl_max[3:6]
+    pos_min, pos_max = ctrl_min[:3], ctrl_max[:3]
+    rot_min, rot_max = ctrl_min[3:6], ctrl_max[3:6]
+    
+    target_actions = np.zeros((obs_vec.shape[0], 6))
     
     for i in range(obs_vec.shape[0]):
-        # Account for offset and rotation
-        # paddle_ori_ideal is [w, x, y, z] in MyoSuite
-        # R.from_quat expects [x, y, z, w]
-        q = paddle_ori_ideal[i]
-        r_ideal = R.from_quat([q[1], q[2], q[3], q[0]])
-        rotated_offset = r_ideal.apply(paddle_offset_body_frame)
+        # Stabilization logic:
+        # 1. Freeze target if ball is very close to impact (x > 1.5)
+        # 2. Freeze target if paddle is already touching the ball
+        # 3. Freeze target if ball is moving away (hit already happened)
+        should_freeze = (ball_pos_x[i] > 1.5) or (paddle_touch[i] > 0) or (ball_vel_x[i] < -0.1)
         
-        # Desired joint positions (relative to base)
-        # joint_pos = pred_ball_pos - base_pos - offset
-        desired_joint_pos = pred_ball_pos[i] - base_pos - rotated_offset
-        
-        # Normalize position
-        action_pos = 2.0 * (desired_joint_pos - pos_min) / (pos_max - pos_min) - 1.0
-        action_pos = np.clip(action_pos, -1.0, 1.0)
-        actions_pos.append(action_pos)
-        
-        # Orientation Control
-        desired_euler = r_ideal.as_euler('xyz')
-        
-        # Normalize rotation
-        action_rot = 2.0 * (desired_euler - rot_min) / (rot_max - rot_min) - 1.0
-        action_rot = np.clip(action_rot, -1.0, 1.0)
-        actions_rot.append(action_rot)
+        if should_freeze and frozen_actions[i] is not None:
+            target_actions[i] = frozen_actions[i]
+        else:
+            # Calculate new target action
+            q = paddle_ori_ideal[i]
+            r_ideal = R.from_quat([q[1], q[2], q[3], q[0]])
+            rotated_offset = r_ideal.apply(paddle_offset_body_frame)
+            
+            desired_joint_pos = pred_ball_pos[i] - base_pos - rotated_offset
+            action_pos = 2.0 * (desired_joint_pos - pos_min) / (pos_max - pos_min) - 1.0
+            
+            desired_euler = r_ideal.as_euler('xyz')
+            action_rot = 2.0 * (desired_euler - rot_min) / (rot_max - rot_min) - 1.0
+            
+            new_action = np.concatenate([action_pos, action_rot])
+            target_actions[i] = np.clip(new_action, -1.0, 1.0)
+            
+            # Update frozen action if we are approaching the freeze zone
+            if ball_pos_x[i] > 1.4:
+                frozen_actions[i] = target_actions[i].copy()
+
+    # Slew Rate Limiting: limit max change per step to prevent "spinning" and instability
+    # Max change per step in normalized [-1, 1] units
+    # 0.1 allows full range travel in ~20 steps (0.2 seconds at 100Hz)
+    max_delta = 0.1 
     
-    actions_pos = np.array(actions_pos)
-    actions_rot = np.array(actions_rot)
-    
-    target_actions = np.concatenate([actions_pos, actions_rot], axis=-1)
-    
-    # Smoothing
-    if last_actions is None:
-        actions = target_actions
+    if last_actions is not None:
+        delta = target_actions - last_actions
+        actions = last_actions + np.clip(delta, -max_delta, max_delta)
     else:
-        actions = alpha * target_actions + (1.0 - alpha) * last_actions
+        actions = target_actions
         
     return actions
 
@@ -134,6 +125,7 @@ def main():
 
     obs = envs.reset()
     last_actions = np.zeros((args.num_envs, 6))
+    frozen_actions = [None] * args.num_envs
     
     episodes_completed = 0
     all_rewards = []
@@ -151,7 +143,7 @@ def main():
 
     while episodes_completed < args.num_episodes:
         # Get heuristic action
-        actions = heuristic_policy(obs, ctrl_min, ctrl_max, last_actions=last_actions)
+        actions = heuristic_policy(obs, ctrl_min, ctrl_max, last_actions, frozen_actions)
         last_actions = actions.copy()
         
         # Capture frames before step if rendering is enabled
@@ -204,6 +196,8 @@ def main():
                 current_episode_success[i] = False
                 current_episode_hit_paddle[i] = False
                 env_frames[i] = []
+                last_actions[i] = 0 # Reset action for new episode
+                frozen_actions[i] = None
 
     pbar.close()
     envs.close()
