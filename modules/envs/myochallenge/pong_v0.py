@@ -39,6 +39,7 @@ class PongEnvV0(env_base.MujocoEnv):
         "alignment_z": 5,
         "paddle_quat": 5,
         "move_reg": 0.1,
+        "hit_stability": 5.0,
         "act_reg": 1.0,
         "sparse": 100,
         "solved": 1000,
@@ -109,6 +110,379 @@ class PongEnvV0(env_base.MujocoEnv):
         self.rally_count = rally_count
         self.cur_rally = 0
 
+    def calculate_prediction(self, ball_pos, ball_vel, paddle_pos, paddle_vel=None):
+        """
+        Predict ball position at the paddle X-plane and compute an "ideal" paddle orientation
+        that would reflect the ball towards a fixed target.
+        
+        For single-env usage (1D `ball_pos` / `ball_vel`), we prefer a short MuJoCo forward
+        rollout from the current simulator state. This matches the true dynamics specified
+        in `myoarm_pong.xml` (drag via `fluidcoef`, contact with table/net, etc.).
+
+        For batched inputs, we fall back to a lightweight analytic approximation.
+        """
+        # --- helpers (batch-safe) ---
+        def _safe_unit(v, fallback):
+            n = np.linalg.norm(v, axis=-1, keepdims=True)
+            return np.divide(v, n, out=np.broadcast_to(fallback, v.shape).copy(), where=n > 1e-9)
+
+        def _quat_from_two_unit_vecs(a_unit, b_unit):
+            # Returns quaternion [w, x, y, z] rotating a_unit -> b_unit (shortest arc)
+            dot = np.sum(a_unit * b_unit, axis=-1, keepdims=True)  # (..., 1)
+            v = np.cross(a_unit, b_unit)  # (..., 3)
+            w = 1.0 + dot  # (..., 1)
+
+            # Handle opposite vectors: choose a stable orthogonal axis (here z-axis for our fixed a=[-1,0,0])
+            opposite = (dot < -0.999999).squeeze(-1)
+            q = np.concatenate([w, v], axis=-1)  # (..., 4)
+            q_norm = np.linalg.norm(q, axis=-1, keepdims=True)
+            q = np.divide(q, q_norm, out=np.zeros_like(q), where=q_norm > 1e-12)
+
+            if np.any(opposite):
+                # 180deg around +Z gives [-1,0,0] -> [1,0,0]
+                q_op = np.array([0.0, 0.0, 0.0, 1.0])
+                if q.ndim == 1:
+                    q = q_op
+                else:
+                    q = q.copy()
+                    q[opposite] = q_op
+            return q
+
+        def _sim_predict_ball_at_xplane(paddle_xplane, max_time=2.0):
+            """
+            Predict ball state when its center reaches the given world X-plane, by stepping
+            the MuJoCo simulator forward from the current state and then restoring it.
+            Returns (pos(3,), vel(3,), ok(bool)).
+            """
+            sim = self.sim  # SimScene / DMSimScene wrapper
+            model = sim.model
+            data = sim.data
+
+            # Save full mutable state we might touch
+            qpos0 = data.qpos.copy()
+            qvel0 = data.qvel.copy()
+            time0 = float(data.time)
+            ctrl0 = data.ctrl.copy() if getattr(model, "nu", 0) > 0 else None
+            act0 = data.act.copy() if getattr(model, "na", 0) > 0 else None
+            
+            # Save paddle properties if we are going to modify them
+            # We want to essentially remove the paddle from collision or move it out of the way.
+            # Easiest is to move the paddle far away in joint space.
+            # Paddle joints start at self.paddle_posadr
+            
+            try:
+                # Freeze paddle by holding position actuators at current joint positions
+                # OR better: move paddle joints far away so it doesn't hit ball during prediction
+                # Paddle is joint "paddle_x" etc.
+                # Actually, setting qpos to something huge might break physics stability if constraints are violated.
+                # Let's just zero velocity and hope it doesn't move much? 
+                # Or set the joint limits to be somewhere else?
+                # Safer: disable collision for paddle geom.
+                # But conaffinity is in model.
+                
+                # Let's try zeroing velocities and setting control to hold current position (if possible)
+                # But the paddle might be IN THE WAY right now.
+                # If we are predicting for future intersection, and the paddle is currently blocking, 
+                # the rollout will hit the paddle.
+                
+                # Best approach: Teleport paddle out of the way (e.g. z = +10.0)
+                # "paddle_z" is the 3rd joint of paddle.
+                # Range is -0.3 to 0.1 in actuator, but joint range is -2 to 2.
+                # Let's set paddle_z joint value to 1.5 (high up)
+                
+                paddle_z_adr = self.paddle_posadr + 2
+                data.qpos[paddle_z_adr] = 1.5 
+                
+                # Also zero velocities for paddle
+                pd = int(self.paddle_dofadr)
+                data.qvel[pd:pd+6] = 0.0
+                
+                # Step until ball crosses x-plane (from smaller x to larger x)
+                # Ball moves +X in this env setup.
+                
+                dt_sim = float(model.opt.timestep)
+                n_steps = int(max(1, np.ceil(max_time / max(dt_sim, 1e-9))))
+
+                ball_sid = self.id_info.ball_sid
+                prev_pos = data.site_xpos[ball_sid].copy()
+                prev_err = paddle_xplane - float(prev_pos[0])
+
+                ok = False
+                out_pos = prev_pos.copy()
+                out_vel = self.get_sensor_by_name(model, data, "pingpong_vel_sensor").copy()
+
+                # If already passed, return current
+                if prev_err <= 0:
+                    return prev_pos, out_vel, True
+
+                for _ in range(n_steps):
+                    # Advance physics by one internal step (no rendering).
+                    # DMSimScene implements advance(substeps, render).
+                    # Check if advance exists, else use standard step
+                    if hasattr(sim, "advance"):
+                        sim.advance(substeps=1, render=False)
+                    else:
+                        # Fallback for standard mujoco/dm_control sim
+                        sim.step()
+                        
+                    curr_pos = data.site_xpos[ball_sid].copy()
+                    curr_err = paddle_xplane - float(curr_pos[0])
+
+                    # Detect crossing: err goes from >0 to <=0
+                    if (prev_err > 0.0) and (curr_err <= 0.0):
+                        # Linear interpolate between prev and curr for position at plane
+                        denom = (prev_err - curr_err)
+                        alpha = prev_err / denom if abs(denom) > 1e-12 else 0.0
+                        alpha = float(np.clip(alpha, 0.0, 1.0))
+                        out_pos = prev_pos + alpha * (curr_pos - prev_pos)
+                        out_pos[0] = float(paddle_xplane)
+
+                        # Use current sensor velocity as a good approximation at crossing
+                        out_vel = self.get_sensor_by_name(model, data, "pingpong_vel_sensor").copy()
+                        ok = True
+                        break
+
+                    prev_pos = curr_pos
+                    prev_err = curr_err
+                    
+                    # Safety check: if ball falls off table (Z < 0), stop
+                    if curr_pos[2] < 0.0:
+                        break
+
+                return out_pos, out_vel, ok
+            except Exception as e:
+                # If anything fails, return None
+                return None, None, False
+            finally:
+                # Restore state and forward
+                data.qpos[:] = qpos0
+                data.qvel[:] = qvel0
+                data.time = time0
+                if ctrl0 is not None:
+                    data.ctrl[:] = ctrl0
+                if act0 is not None:
+                    data.act[:] = act0
+                
+                # Use sim.forward() to ensure consistency with wrapper
+                sim.forward()
+
+        # --- core ---
+        # If we have single-environment vectors, use MuJoCo rollout for best fidelity.
+        # This accounts for air resistance, table friction, and complex bounces.
+        use_sim_rollout = False
+        if use_sim_rollout:
+            paddle_xplane = float(paddle_pos[0])
+
+            # If ball isn't moving towards +X plane, don't predict forward.
+            # Or if it's already passed.
+            if float(ball_vel[0]) <= 1e-4 or float(paddle_xplane - ball_pos[0]) <= 0.0:
+                pred_ball_pos = np.array([paddle_xplane, float(ball_pos[1]), float(ball_pos[2])], dtype=float)
+                pred_ball_vel = np.array(ball_vel, dtype=float)
+            else:
+                # Bound rollout horizon by a coarse time-to-plane estimate.
+                approx_dt = float((paddle_xplane - ball_pos[0]) / max(float(ball_vel[0]), 1e-4))
+                max_time = float(np.clip(approx_dt * 1.5, 0.05, 2.0))
+                
+                pred_ball_pos, pred_ball_vel, ok = _sim_predict_ball_at_xplane(paddle_xplane, max_time=max_time)
+                if not ok or pred_ball_pos is None:
+                    # Fall back to analytic prediction if rollout fails
+                    use_sim_rollout = False
+
+        if not use_sim_rollout:
+            # --- Batched / Analytic Fallback ---
+            # Predictive time to paddle x-plane
+            reach_err = paddle_pos - ball_pos
+            err_x = reach_err[..., 0]
+            vx = ball_vel[..., 0]
+            eps_vx = 1e-3
+
+            dt = np.zeros_like(err_x)
+            valid = (err_x > 0.0) & (vx > eps_vx)
+            dt = np.divide(err_x, vx, out=dt, where=valid)
+            dt = np.clip(dt, 0.0, 2.0)
+
+            # Gravity magnitude (MuJoCo uses negative Z gravity)
+            g = float(-self.sim.model.opt.gravity[2]) if hasattr(self, "sim") else 9.81
+            if not np.isfinite(g) or g <= 0:
+                g = 9.81
+
+            # Table top plane (use OWN half: where we expect the bounce before paddle hit)
+            own_gid = self.id_info.own_half_gid
+            table_z = float(self.sim.data.geom_xpos[own_gid][2] + self.sim.model.geom_size[own_gid][2])
+            ball_r = float(self.sim.model.geom_size[self.id_info.ball_gid][0])
+            z_contact = table_z + ball_r
+
+            # Ballistic prediction (with at most one bounce on the table plane)
+            x_pred = np.broadcast_to(paddle_pos[..., 0], err_x.shape)
+            y0 = ball_pos[..., 1]
+            z0 = ball_pos[..., 2]
+            vy0 = ball_vel[..., 1]
+            vz0 = ball_vel[..., 2]
+
+            # Unbounced
+            y_pred = y0 + vy0 * dt
+            z_pred = z0 + vz0 * dt - 0.5 * g * (dt ** 2)
+            vz_pred = vz0 - g * dt
+
+            # Check if we'd hit the table before reaching the paddle x-plane:
+            # Solve z0 + vz0*t - 0.5*g*t^2 = z_contact for smallest positive t.
+            a = -0.5 * g
+            b = vz0
+            c = z0 - z_contact
+            disc = b * b - 4.0 * a * c
+            disc = np.maximum(disc, 0.0)
+            sqrt_disc = np.sqrt(disc)
+
+            # With a<0, the earlier root is (-b - sqrt_disc)/(2a) if it is positive
+            denom = 2.0 * a
+            t_hit = np.divide((-b - sqrt_disc), denom, out=np.full_like(dt, np.inf), where=np.abs(denom) > 1e-12)
+            hit_mask = (t_hit > 0.0) & (t_hit < dt)
+
+            if np.any(hit_mask):
+                # Velocity at table impact
+                vz_hit = vz0 - g * t_hit
+
+                # Simple restitution (can be tuned via env attr if you want)
+                e = float(getattr(self, "predict_restitution", 0.9))
+                e = float(np.clip(e, 0.0, 1.0))
+
+                vz_after = -e * vz_hit
+                dt2 = dt - t_hit
+
+                # Propagate after bounce from (y_hit,z_contact) with updated vz
+                y_hit = y0 + vy0 * t_hit
+                y_pred_b = y_hit + vy0 * dt2
+                z_pred_b = z_contact + vz_after * dt2 - 0.5 * g * (dt2 ** 2)
+                vz_pred_b = vz_after - g * dt2
+
+                y_pred = np.where(hit_mask, y_pred_b, y_pred)
+                z_pred = np.where(hit_mask, z_pred_b, z_pred)
+                vz_pred = np.where(hit_mask, vz_pred_b, vz_pred)
+
+            pred_ball_pos = np.stack([x_pred, y_pred, z_pred], axis=-1)
+
+            # Predicted ball velocity at impact (account for gravity + bounce)
+            pred_ball_vel = np.stack([vx, vy0, vz_pred], axis=-1)
+
+        # --- Dynamic target and normal calculation (Lob/Ballistic) ---
+        # Target a point deep in the opponent's court (high arc, safe landing)
+        target_x = -1.5
+        target_y = 0.0
+        target_z = 1.0 # Default "safe" height
+
+        # --- Dynamic trajectory adjustment (Lob/Ballistic) ---
+        # Net top = table_height (0.795) + net_half_height (0.1525) = 0.9475
+        net_height = 0.95 
+        safe_margin = 0.05
+
+        # 1. Estimate time to net
+        p_x = pred_ball_pos[..., 0]
+        p_z = pred_ball_pos[..., 2]
+        
+        # Estimate outgoing x-velocity. Assume elastic reflection roughly preserves |vx|.
+        # Incoming vx is positive (towards paddle). Outgoing will be negative (towards net).
+        # We use the magnitude of the incoming velocity as a proxy for the return velocity.
+        vx_in = np.abs(pred_ball_vel[..., 0])
+        vx_est = np.maximum(vx_in, 0.1) # Avoid divide by zero, assume at least 0.1m/s
+        
+        # Time for ball to travel from paddle (p_x) to net (0)
+        # p_x is positive (~1.5m), net is 0.
+        t_to_net = p_x / vx_est
+        
+        # 2. Calculate gravity drop at the net
+        g = 9.81
+        # z_drop = 0.5 * g * t^2
+        gravity_drop = 0.5 * g * (t_to_net ** 2)
+        
+        # 3. Determine required "linear target height" at the net
+        # The linear path must pass through this height at x=0 so that after gravity drops it,
+        # it is still above (net_height + margin).
+        h_virt_net = net_height + safe_margin + gravity_drop
+        
+        # 4. Calculate the Target Z required to pass through h_virt_net at x=0
+        # Linear interpolation: z(x) = p_z + alpha * (target_z - p_z)
+        # alpha at net = (0 - p_x) / (target_x - p_x)
+        denom = target_x - p_x
+        # Ratio of distance to net vs distance to target
+        ratio_net = np.divide(-p_x, denom, out=np.zeros_like(p_x), where=np.abs(denom) > 1e-6)
+        
+        # Constraint: p_z + ratio_net * (target_z - p_z) >= h_virt_net
+        # ratio_net * (target_z - p_z) >= h_virt_net - p_z
+        # target_z - p_z >= (h_virt_net - p_z) / ratio_net
+        # target_z >= p_z + (h_virt_net - p_z) / ratio_net
+        
+        target_z_required = p_z + np.divide(h_virt_net - p_z, ratio_net, out=np.zeros_like(p_x), where=np.abs(ratio_net) > 1e-6)
+        
+        # Use the higher of default or calculated required z
+        # Also clamp to reasonable max to prevent shooting at the ceiling (e.g. 4.0m)
+        final_target_z = np.clip(np.maximum(target_z, target_z_required), 0.0, 4.0)
+        
+        if final_target_z.ndim == 0:
+             opp_target = np.array([target_x, target_y, float(final_target_z)])
+        else:
+             # Handle batch case
+             ones = np.ones_like(final_target_z)
+             opp_target = np.stack([target_x * ones, target_y * ones, final_target_z], axis=-1)
+
+        d_out = opp_target - pred_ball_pos
+        d_out = _safe_unit(d_out, np.array([-1.0, 0.0, 0.0]))
+
+        # Relative velocity logic for moving paddle
+        if paddle_vel is None:
+            # Handle both single and batch cases for default
+            if pred_ball_vel.ndim == 1:
+                paddle_vel = np.zeros(3)
+            else:
+                paddle_vel = np.zeros_like(pred_ball_vel)
+        
+        # v_rel_in = ball_vel - paddle_vel (relative velocity at impact)
+        v_rel_in = pred_ball_vel - paddle_vel
+        v_rel_in_mag = np.linalg.norm(v_rel_in, axis=-1, keepdims=True)
+        
+        # We want v_ball_out = beta * d_out
+        # Energy conservation: |v_ball_out - paddle_vel| = |v_rel_in|
+        # |beta * d_out - paddle_vel|^2 = v_rel_in_mag^2
+        # beta^2 - 2*beta*(d_out . paddle_vel) + |paddle_vel|^2 - v_rel_in_mag^2 = 0
+        
+        d_out_dot_vp = np.sum(d_out * paddle_vel, axis=-1, keepdims=True)
+        vp_mag_sq = np.sum(paddle_vel**2, axis=-1, keepdims=True)
+        
+        # Quadratic: beta^2 + b*beta + c = 0
+        # b = -2 * d_out_dot_vp
+        # c = vp_mag_sq - v_rel_in_mag^2
+        
+        discriminant = d_out_dot_vp**2 - vp_mag_sq + v_rel_in_mag**2
+        discriminant = np.maximum(discriminant, 0.0)
+        
+        # Speed of ball after impact in world frame (positive root)
+        beta = d_out_dot_vp + np.sqrt(discriminant)
+        
+        v_ball_out = beta * d_out
+        
+        # Normal is parallel to change in velocity (Impulse direction)
+        n_ideal = _safe_unit(v_ball_out - pred_ball_vel, np.array([-1.0, 0.0, 0.0]))
+
+        # Ensure normal points roughly towards -X (paddle facing direction in this model)
+        flip = (n_ideal[..., 0] > 0.0)
+        if np.any(flip):
+            n_ideal = n_ideal.copy()
+            if n_ideal.ndim == 1:
+                n_ideal *= -1.0
+            else:
+                n_ideal[flip] *= -1.0
+
+        # Convert n_ideal to quaternion aligning reference normal [-1, 0, 0] to n_ideal
+        a_unit = np.array([-1.0, 0.0, 0.0])
+        if n_ideal.ndim == 1:
+            a_u = a_unit
+        else:
+            a_u = np.broadcast_to(a_unit, n_ideal.shape)
+        a_u = _safe_unit(a_u, np.array([-1.0, 0.0, 0.0]))
+        b_u = _safe_unit(n_ideal, np.array([-1.0, 0.0, 0.0]))
+        paddle_ori_ideal = _quat_from_two_unit_vecs(a_u, b_u)
+
+        return pred_ball_pos, n_ideal, paddle_ori_ideal
+
     def get_obs_dict(self, sim):
         obs_dict = {}
         obs_dict['time'] = np.array([sim.data.time])
@@ -124,50 +498,20 @@ class PongEnvV0(env_base.MujocoEnv):
 
         obs_dict['reach_err'] = obs_dict['paddle_pos'] - obs_dict['ball_pos']
 
-        # Predictive ball position at paddle's X-plane
-        err_x = obs_dict['reach_err'][..., 0]
+        # Predictive ball position at a stable impact X-plane
         ball_vel = obs_dict['ball_vel']
         ball_pos = obs_dict['ball_pos']
         paddle_pos = obs_dict['paddle_pos']
 
-        # Time for ball to reach paddle's X-plane
-        dt = np.divide(err_x, ball_vel[..., 0], out=np.zeros_like(err_x), where=ball_vel[..., 0] > 0.5)
-        dt = np.clip(dt, 0, 1.5) 
+        # Use a fixed impact plane for more stable prediction
+        # Paddle x range is [1.5, 1.8] (base 1.8 + ctrl [-0.3, 0])
+        stable_paddle_pos = paddle_pos.copy()
+        stable_paddle_pos[0] = 1.62 
+
+        pred_ball_pos, n_ideal, paddle_ori_ideal = self.calculate_prediction(ball_pos, ball_vel, stable_paddle_pos, obs_dict.get('paddle_vel'))
         
-        # Predicted ball position (ballistic)
-        pred_ball_y = ball_pos[..., 1] + ball_vel[..., 1] * dt
-        pred_ball_z = ball_pos[..., 2] + ball_vel[..., 2] * dt - 0.5 * 9.81 * dt**2
-        obs_dict['pred_ball_pos'] = np.stack([paddle_pos[..., 0], pred_ball_y, pred_ball_z], axis=-1)
-
-        # Ideal paddle normal (Reflection law)
-        opp_target = np.array([-0.7, 0.0, 0.8])
-        d_out = opp_target - paddle_pos
-        d_out_norm = np.linalg.norm(d_out, axis=-1, keepdims=True)
-        d_out = np.divide(d_out, d_out_norm, out=np.array([-1.0, 0.0, 0.0]), where=d_out_norm > 1e-6)
-
-        d_in = ball_vel.copy()
-        d_in_norm = np.linalg.norm(d_in, axis=-1, keepdims=True)
-        d_in = np.divide(d_in, d_in_norm, out=np.array([1.0, 0.0, 0.0]), where=d_in_norm > 1e-6)
-
-        n_ideal = d_out - d_in
-        n_ideal_norm = np.linalg.norm(n_ideal, axis=-1, keepdims=True)
-        n_ideal = np.divide(n_ideal, n_ideal_norm, out=np.array([-1.0, 0.0, 0.0]), where=n_ideal_norm > 1e-6)
+        obs_dict['pred_ball_pos'] = pred_ball_pos
         obs_dict['n_ideal'] = n_ideal
-
-        # Convert n_ideal to a quaternion (orientation that aligns [-1, 0, 0] with n_ideal)
-        a = np.array([-1.0, 0.0, 0.0])
-        b = n_ideal.squeeze()
-        
-        # Standard shortest arc rotation between two unit vectors
-        dot = np.dot(a, b)
-        if dot < -0.999999: # Vectors are opposite
-            paddle_ori_ideal = np.array([0.0, 0.0, 1.0, 0.0]) 
-        else:
-            w = 1.0 + dot
-            v = np.cross(a, b)
-            paddle_ori_ideal = np.array([w, v[0], v[1], v[2]])
-            paddle_ori_ideal /= np.linalg.norm(paddle_ori_ideal)
-        
         obs_dict['paddle_ori_ideal'] = paddle_ori_ideal
 
         # Contact tracking for rewards and termination
@@ -236,7 +580,12 @@ class PongEnvV0(env_base.MujocoEnv):
         paddle_ang_vel = np.linalg.norm(paddle_ang_vel_raw)
 
         # Smooth movement regularizer: quadratic for small jitters, logarithmic for large movements.
-        move_reg = -1.0 * np.log(1.0 + paddle_vel + 0.5 * paddle_ang_vel)
+        move_reg = -1.0 * np.log(1.0 + paddle_vel + 2.0 * paddle_ang_vel)
+        
+        # Stability reward during hit (very localized around the ball-paddle contact)
+        # Only active for a very small window before and after hitting the ball
+        hit_proximity = np.exp(-50.0 * reach_dist)
+        hit_stability = active_mask * hit_proximity * np.exp(-paddle_vel - paddle_ang_vel)
         
         # Action Regularization (energy usage)
         # Using control input if available
@@ -251,6 +600,7 @@ class PongEnvV0(env_base.MujocoEnv):
             ('alignment_y', alignment_y),
             ('alignment_z', alignment_z),
             ('paddle_quat', paddle_quat_reward),
+            ('hit_stability', hit_stability),
             ('move_reg', move_reg), 
             ('act_reg', -1. * act_mag),
             ('sparse', np.array([paddle_touch > 0])), 
@@ -315,11 +665,13 @@ class PongEnvV0(env_base.MujocoEnv):
                 num_success += 1
         score = num_success/num_paths
         effort = -1.0*np.mean([np.mean(p['env_infos']['rwd_dict']['act_reg']) for p in paths])
-        metrics = {
+        hit_paddle = np.mean([np.sum(p['env_infos']['rwd_dict']['sparse']) for p in paths])
+
+        return {
             'score': score,
             'effort':effort,
-            }
-        return metrics
+            'hit_paddle':hit_paddle
+        }
     
     def get_sensor_by_name(self, model, data, name):
         sensor_id = model.sensor_name2id(name)
@@ -426,14 +778,14 @@ class PongEnvV0(env_base.MujocoEnv):
         self.sim.data.qvel[self.ball_dofadr: self.ball_dofadr + 6] = ball_vel
 
     def step(self, a, **kwargs):
-        if self.normalize_act:
-            # Map [-1, 1] to ctrlrange
-            a = np.clip(a, -1.0, 1.0)
-            ctrlrange = self.sim.model.actuator_ctrlrange
-            a = (a + 1.0) / 2.0 * (ctrlrange[:, 1] - ctrlrange[:, 0]) + ctrlrange[:, 0]
-        else:
-            # Clip action to our defined action space based on XML ctrlrange
-            a = np.clip(a, self.action_space.low, self.action_space.high)
+        # if self.normalize_act:
+        #     # Map [-1, 1] to ctrlrange
+        #     a = np.clip(a, -1.0, 1.0)
+        #     ctrlrange = self.sim.model.actuator_ctrlrange
+        #     a = (a + 1.0) / 2.0 * (ctrlrange[:, 1] - ctrlrange[:, 0]) + ctrlrange[:, 0]
+        # else:
+        #     # Clip action to our defined action space based on XML ctrlrange
+        #     a = np.clip(a, self.action_space.low, self.action_space.high)
         return super().step(a, **kwargs)
 
 

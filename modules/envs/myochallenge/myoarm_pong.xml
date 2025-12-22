@@ -111,12 +111,12 @@
     </worldbody>
 
     <actuator>
-        <position name="paddle_x" joint="paddle_x" class="paddle_move" ctrllimited="true" ctrlrange="-0.4 0"/>
-        <position name="paddle_y" joint="paddle_y" class="paddle_move" ctrllimited="true" ctrlrange="-1.0 0.3"/>
-        <position name="paddle_z" joint="paddle_z" class="paddle_move" ctrllimited="true" ctrlrange="-0.3 0.1"/>
-        <position name="paddle_rx" joint="paddle_rx" class="paddle_move" ctrlrange="-3.14 3.14"/>
-        <position name="paddle_ry" joint="paddle_ry" class="paddle_move" ctrlrange="-3.14 3.14"/>
-        <position name="paddle_rz" joint="paddle_rz" class="paddle_move" ctrlrange="-3.14 3.14"/>
+        <position name="paddle_x" joint="paddle_x" class="paddle_move" ctrllimited="true" ctrlrange="-0.3 0"/>
+        <position name="paddle_y" joint="paddle_y" class="paddle_move" ctrllimited="true" ctrlrange="-1.5 0.5"/>
+        <position name="paddle_z" joint="paddle_z" class="paddle_move" ctrllimited="true" ctrlrange="-0.3 0.3"/>
+        <position name="paddle_rx" joint="paddle_rx" class="paddle_move" ctrlrange="-1.7 1.7"/>
+        <position name="paddle_ry" joint="paddle_ry" class="paddle_move" ctrlrange="-1.2 1.2"/>
+        <position name="paddle_rz" joint="paddle_rz" class="paddle_move" ctrlrange="-1.2 1.2"/>
     </actuator>
 
     <sensor>

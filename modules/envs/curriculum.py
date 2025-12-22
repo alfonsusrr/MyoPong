@@ -20,6 +20,7 @@ def tabletennis_curriculum_kwargs(difficulty: int = 0) -> Dict[str, Any]:
       "palm_dist": 1,
       "paddle_quat": 2,
       "act_reg": 0.1,  # <--- SIGNIFICANTLY LOWERED (Default is 0.5)
+    #   "hit_stability": 5.0,
       "torso_up": 2,
       "sparse": 100,
       "solved": 1000,
@@ -33,6 +34,7 @@ def tabletennis_curriculum_kwargs(difficulty: int = 0) -> Dict[str, Any]:
       "palm_dist": 0.6,
       "paddle_quat": 1.5,
       "act_reg": 0.5,
+    #   "hit_stability": 10.0,
       "torso_up": 2.0,
       "sparse": 50,
       "solved": 1200,
@@ -73,7 +75,7 @@ def tabletennis_curriculum_kwargs(difficulty: int = 0) -> Dict[str, Any]:
               "high": [-1.20, -0.465, 1.46]
           },
           # Keep this TRUE. We need the agent to learn physics, not memorization.
-          "ball_qvel": True,
+          "ball_qvel": False,
           # Serve speed control (keeps target_xyz_range unchanged):
           # - 1.0 = default speed
           # - >1.0 = slower serves (longer flight time, lower horizontal velocity)
@@ -85,7 +87,7 @@ def tabletennis_curriculum_kwargs(difficulty: int = 0) -> Dict[str, Any]:
         #       "low": [0.6, 0.05, 0.785],
         #       "high": [1.2,  0.15, 0.785]
         #   },
-          "weighted_reward_keys": warmup_rewards,
+        #   "weighted_reward_keys": warmup_rewards,
       },
       # Level 1: "Directional Training"
       # - Widen the target to Y = -0.3 to 0.3 (Mid-range angles)
@@ -94,13 +96,8 @@ def tabletennis_curriculum_kwargs(difficulty: int = 0) -> Dict[str, Any]:
               "low":  p1_low,
               "high": p1_high
           },
-          "ball_qvel": True,
-          # Wider target area
-          "target_xyz_range": {
-              "low":  [0.5, -0.3, 0.785],
-              "high": [1.35, 0.3, 0.785]
-          },
-          "weighted_reward_keys": warmup_rewards,
+          "ball_qvel": False,
+        #   "weighted_reward_keys": warmup_rewards,
       },
 
       # ---------------------------------------------------------------------
@@ -110,7 +107,7 @@ def tabletennis_curriculum_kwargs(difficulty: int = 0) -> Dict[str, Any]:
       # ---------------------------------------------------------------------
       2: {
           "ball_xyz_range": {"low": p1_low, "high": p1_high},
-          "ball_qvel": True,  # Use internal solver to target paddle
+          "ball_qvel": True,
       },
 
       # ---------------------------------------------------------------------
@@ -130,7 +127,7 @@ def tabletennis_curriculum_kwargs(difficulty: int = 0) -> Dict[str, Any]:
           "ball_xyz_range": {"low": p2_low, "high": p2_high},
           "ball_qvel": True,
           "paddle_mass_range": (0.1, 0.15),
-          "weighted_reward_keys": finetuning_rewards,
+        #   "weighted_reward_keys": finetuning_rewards,
       },
 
       # ---------------------------------------------------------------------
@@ -143,7 +140,7 @@ def tabletennis_curriculum_kwargs(difficulty: int = 0) -> Dict[str, Any]:
           "paddle_mass_range": (0.1, 0.15),
           "ball_friction_range": {"low": fric_low, "high": fric_high},
           "qpos_noise_range": {"low": -0.02, "high": 0.02},
-          "weighted_reward_keys": finetuning_rewards,
+        #   "weighted_reward_keys": finetuning_rewards,
       },
   }
 

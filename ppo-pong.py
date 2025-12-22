@@ -51,7 +51,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-envs", type=int, default=12, help="Number of parallel environments")
     parser.add_argument("--batch-size", type=int, default=2048, help="Batch size")
     parser.add_argument("--n-steps", type=int, default=2048, help="Steps per update")
-    parser.add_argument("--difficulty", type=int, default=3, help="Curriculum difficulty (0-4)")
+    parser.add_argument("--difficulty", type=int, default=2, help="Curriculum difficulty (0-4)")
     parser.add_argument("--log-dir", type=str, default=os.path.join("runs", "pong_ppo_simple"), help="Log directory")
     parser.add_argument("--checkpoint-freq", type=int, default=500_000, help="Checkpoint frequency")
     parser.add_argument("--eval-freq", type=int, default=50_000, help="Evaluation frequency")
@@ -142,16 +142,35 @@ def main():
         remaining_timesteps = args.total_timesteps - current_timesteps
         print(f"Resuming training for {remaining_timesteps} steps (target: {args.total_timesteps})")
     else:
+        print(f"Using exponential learning rate scheduler with initial learning rate 3e-4 and decay factor 0.1")
+
+        initial_lr = 3e-4
+
         model = PPO(
             "MlpPolicy",
             vec_env,
             verbose=1,
             seed=seed,
-            use_sde=True,
-            sde_sample_freq=4,
-            n_steps=args.n_steps,   
-            batch_size=args.batch_size,
             tensorboard_log=log_dir,
+            n_steps=args.n_steps,   # Rollout buffer size per environment
+            batch_size=args.batch_size,   # Minibatch size for each gradient update
+            learning_rate=initial_lr,           # Adam learning rate
+            ent_coef=0.0,                 # Entropy coefficient
+            vf_coef=0.5,                  # Value function coefficient
+            max_grad_norm=0.5,            # Max norm for gradient clipping
+            gamma=0.99,                   # Discount factor
+            gae_lambda=0.95,              # GAE lambda
+            clip_range=0.2,               # PPO clip range
+            use_sde=True,                 # State-dependent exploration (SDE)
+            sde_sample_freq=4,            # SDE sample frequency
+            n_epochs=10,                  # Number of times each minibatch is trained per update
+            target_kl=None,               # Target KL for early stopping (can use default)
+            normalize_advantage=True,     # Normalize advantage estimates
+            policy_kwargs=dict(
+                net_arch=[dict(pi=[256, 256], vf=[256, 256])], # Separate architecture for actor/critic
+                log_std_init=-2.0,         # Initial log std for SDE
+                ortho_init=True,           # Orthogonal initialization
+            ),
         )
 
     # 5. Callbacks
