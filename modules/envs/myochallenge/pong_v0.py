@@ -364,16 +364,15 @@ class PongEnvV0(env_base.MujocoEnv):
             # Predicted ball velocity at impact (account for gravity + bounce)
             pred_ball_vel = np.stack([vx, vy0, vz_pred], axis=-1)
 
-        # --- Dynamic target and normal calculation (Lob/Ballistic) ---
-        # Target a point deep in the opponent's court (high arc, safe landing)
-        target_x = -1.8
+        # --- Ballistic target and normal calculation ---
+        # Target a point deep in the opponent's court
+        target_x = -0.9
         target_y = 0.0
-        target_z = 1.0 # Default "safe" height
+        target_z = 0.95 # Base target height
 
         # --- Dynamic trajectory adjustment (Lob/Ballistic) ---
         # Net top = table_height (0.795) + net_half_height (0.1525) = 0.9475
-        net_height = 0.95 
-        safe_margin = 0.05
+        net_height = 0.95
 
         # 1. Estimate time to net
         p_x = pred_ball_pos[..., 0]
@@ -383,7 +382,7 @@ class PongEnvV0(env_base.MujocoEnv):
         # Incoming vx is positive (towards paddle). Outgoing will be negative (towards net).
         # We use the magnitude of the incoming velocity as a proxy for the return velocity.
         vx_in = np.abs(pred_ball_vel[..., 0])
-        vx_est = np.maximum(vx_in, 0.1) # Avoid divide by zero, assume at least 0.1m/s
+        vx_est = np.maximum(vx_in, 0.5) # Avoid divide by zero, assume at least 0.1m/s
         
         # Time for ball to travel from paddle (p_x) to net (0)
         # p_x is positive (~1.5m), net is 0.
@@ -397,7 +396,7 @@ class PongEnvV0(env_base.MujocoEnv):
         # 3. Determine required "linear target height" at the net
         # The linear path must pass through this height at x=0 so that after gravity drops it,
         # it is still above (net_height + margin).
-        h_virt_net = net_height + safe_margin + gravity_drop
+        h_virt_net = net_height + gravity_drop
         
         # 4. Calculate the Target Z required to pass through h_virt_net at x=0
         # Linear interpolation: z(x) = p_z + alpha * (target_z - p_z)
@@ -415,7 +414,7 @@ class PongEnvV0(env_base.MujocoEnv):
         
         # Use the higher of default or calculated required z
         # Also clamp to reasonable max to prevent shooting at the ceiling (e.g. 3.0m)
-        final_target_z = np.clip(np.maximum(target_z, target_z_required), 0.0, 3.0)
+        final_target_z = np.clip(np.maximum(target_z, target_z_required), 0.5, 3.0)
         
         if final_target_z.ndim == 0:
              opp_target = np.array([target_x, target_y, float(final_target_z)])
@@ -435,13 +434,13 @@ class PongEnvV0(env_base.MujocoEnv):
         n_ideal = _safe_unit(d_out - d_in, np.array([-1.0, 0.0, 0.0]))
 
         # Ensure normal points roughly towards -X (paddle facing direction in this model)
-        flip = (n_ideal[..., 0] > 0.0)
-        if np.any(flip):
-            n_ideal = n_ideal.copy()
-            if n_ideal.ndim == 1:
-                n_ideal *= -1.0
-            else:
-                n_ideal[flip] *= -1.0
+        # flip = (n_ideal[..., 0] > 0.0)
+        # if np.any(flip):
+        #     n_ideal = n_ideal.copy()
+        #     if n_ideal.ndim == 1:
+        #         n_ideal *= -1.0
+        #     else:
+        #         n_ideal[flip] *= -1.0
 
         # Convert n_ideal to quaternion aligning reference normal [-1, 0, 0] to n_ideal
         a_unit = np.array([-1.0, 0.0, 0.0])

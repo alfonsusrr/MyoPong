@@ -25,6 +25,7 @@ from myosuite.utils.spec_processing import (
     recursive_remove_contacts,
     recursive_mirror,
 )
+from modules.utils.predict_traj import predict_ball_trajectory
 
 
 MAX_TIME = 3.0
@@ -49,7 +50,10 @@ class TableTennisEnvV0(BaseV0):
   DEFAULT_RWD_KEYS_AND_WEIGHTS = {
       "reach_dist": 1,
       "palm_dist": 1,
-      "paddle_quat": 2,
+      "paddle_quat": 0,
+      "alignment_y": 1,
+      "alignment_z": 1,
+      "paddle_quat_goal": 1,
       "act_reg": 0.5,
       "torso_up": 2,
       # "ref_qpos_err": 1,
@@ -166,6 +170,34 @@ class TableTennisEnvV0(BaseV0):
 
     if sim.model.na > 0:
       obs_dict["act"] = sim.data.act[:].copy()
+
+    # Physics-based prediction (High-level goal)
+    # Extract constants
+    gravity = float(-sim.model.opt.gravity[2])
+    if gravity <= 0: gravity = 9.81
+    
+    own_gid = self.id_info.own_half_gid
+    table_top_z = float(sim.data.geom_xpos[own_gid][2] + sim.model.geom_size[own_gid][2])
+    ball_radius = float(sim.model.geom_size[self.id_info.ball_gid][0])
+    table_z = table_top_z + ball_radius
+
+    # Use current paddle position as target plane
+    # Or follow pong_v0 style with a stable target X if preferred
+    stable_paddle_pos = obs_dict["paddle_pos"].copy()
+    
+    pred_ball_pos, paddle_ori_ideal = predict_ball_trajectory(
+        obs_dict["ball_pos"], 
+        obs_dict["ball_vel"], 
+        stable_paddle_pos,
+        gravity=gravity,
+        table_z=table_z,
+        ball_radius=ball_radius,
+        net_height=0.95
+    )
+    
+    obs_dict["pred_ball_pos"] = pred_ball_pos
+    obs_dict["paddle_ori_goal"] = paddle_ori_ideal
+
     return obs_dict
 
   def get_reward_dict(self, obs_dict):
@@ -201,6 +233,24 @@ class TableTennisEnvV0(BaseV0):
     # ref_qpos_err = np.linalg.norm(qpos_err)
     # ref_qvel_err = np.linalg.norm(qvel_err)
 
+    # Alignment rewards based on prediction
+    err_x = self.obs_dict["reach_err"][..., 0]
+    
+    active_mask = (err_x > -0.05).astype(float)
+    has_hit_paddle = any(PingpongContactLabels.PADDLE in s for s in self.contact_trajectory)
+    active_alignment_mask = active_mask * (1.0 - float(has_hit_paddle))
+
+    pred_err_y = np.abs(obs_dict["paddle_pos"][..., 1] - obs_dict["pred_ball_pos"][..., 1])
+    pred_err_z = np.abs(obs_dict["paddle_pos"][..., 2] - obs_dict["pred_ball_pos"][..., 2])
+
+    alignment_y = active_alignment_mask  * np.exp(-5.0 * pred_err_y)
+    alignment_z = active_alignment_mask  * np.exp(-5.0 * pred_err_z) 
+
+    # Orientation reward relative to goal quaternion (direct comparison)
+    paddle_ori_err_goal = obs_dict["paddle_ori"] - obs_dict["paddle_ori_goal"]
+    paddle_quat_err_goal = np.linalg.norm(paddle_ori_err_goal, axis=-1)
+    paddle_quat_reward_goal = active_alignment_mask * np.exp(-5.0 * paddle_quat_err_goal) 
+
     rwd_dict = collections.OrderedDict(
         (
             # Perform reward tuning here --
@@ -211,6 +261,9 @@ class TableTennisEnvV0(BaseV0):
             ("reach_dist", np.exp(-1.0 * reach_dist)),
             ("palm_dist", np.exp(-5.0 * palm_dist)),
             ("paddle_quat", np.exp(-5 * paddle_quat_err)),
+            ("alignment_y", alignment_y),
+            ("alignment_z", alignment_z),
+            ("paddle_quat_goal", paddle_quat_reward_goal),
             ("torso_up", np.exp(-5 * torso_err)),
             # ('ref_qpos_err', -1 * ref_qpos_err), use these for your imitation learning script
             # ('ref_qvel_err', -1 * ref_qvel_err),
