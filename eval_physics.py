@@ -40,6 +40,8 @@ def heuristic_policy(obs_vec, ctrl_min, ctrl_max, last_actions, frozen_actions):
     ball_pos_x = obs_vec[:, 0]
     ball_vel_x = obs_vec[:, 3]
     paddle_touch = obs_vec[:, 19]
+
+    paddle_pos_x = obs_vec[:, 6]
     
     # Extract pre-calculated targets from observations
     pred_ball_pos = obs_vec[:, 25:28]
@@ -59,7 +61,7 @@ def heuristic_policy(obs_vec, ctrl_min, ctrl_max, last_actions, frozen_actions):
         # 1. Freeze target if ball is very close to impact (x > 1.5)
         # 2. Freeze target if paddle is already touching the ball
         # 3. Freeze target if ball is moving away (hit already happened)
-        should_freeze = (ball_pos_x[i] > 1.5) or (paddle_touch[i] > 0) or (ball_vel_x[i] < -0.1)
+        should_freeze = (abs(ball_pos_x[i] - paddle_pos_x[i]) < 0.05) or (paddle_touch[i] > 0) or (ball_vel_x[i] < -0.05)
         
         if should_freeze and frozen_actions[i] is not None:
             target_actions[i] = frozen_actions[i]
@@ -85,7 +87,7 @@ def heuristic_policy(obs_vec, ctrl_min, ctrl_max, last_actions, frozen_actions):
     # Slew Rate Limiting: limit max change per step to prevent "spinning" and instability
     # Max change per step in normalized [-1, 1] units
     # 0.1 allows full range travel in ~20 steps (0.2 seconds at 100Hz)
-    max_delta = 0.1 
+    max_delta = 0.1
     
     if last_actions is not None:
         delta = target_actions - last_actions
