@@ -48,19 +48,17 @@ class TableTennisEnvV0(BaseV0):
       "touching_info",
   ]
   DEFAULT_RWD_KEYS_AND_WEIGHTS = {
-      "reach_dist": 1,
-      "palm_dist": 1,
+      "reach_dist": 0.1,      # Reduced from 1.0
+      "palm_dist": 0.1,       # Reduced from 1.0
       "paddle_quat": 0,
-      "alignment_y": 1,
-      "alignment_z": 1,
-      "paddle_quat_goal": 1,
-      "act_reg": 0.5,
-      "torso_up": 2,
-      # "ref_qpos_err": 1,
-      # "ref_qvel_err": .1,
-      "sparse": 100,
-      "solved": 1000,
-      "done": -10,
+      "alignment_y": 0.5,     # Reduced from 1.0
+      "alignment_z": 0.5,     # Reduced from 1.0
+      "paddle_quat_goal": 0.5, # Reduced from 1.0
+      "act_reg": 0.1,         # Reduced from 0.5
+      "torso_up": 0.5,        # Reduced from 2.0
+      "sparse": 5.0,          # Touching ball is a big milestone
+      "solved": 100.0,         # Success is the ultimate goal
+      "done": -5.0,           # Penalty for failure
   }
 
   def __init__(self, model_path, obsd_model_path=None, seed=None, **kwargs):
@@ -269,9 +267,9 @@ class TableTennisEnvV0(BaseV0):
             # ('ref_qvel_err', -1 * ref_qvel_err),
             # Must keys
             ("act_reg", -1.0 * act_mag),
-            ("sparse", paddle_touch[0] == 1),  # paddle_touching
-            ("solved", np.array([[solved]])),
-            ("done", np.array([[self._get_done(ball_pos[-1], solved)]])),
+            ("sparse", float(paddle_touch[0] == 1)),  # paddle_touching
+            ("solved", float(solved)),
+            ("done", float(self._get_done(ball_pos[-1], solved))),
         )
     )
 
@@ -280,15 +278,6 @@ class TableTennisEnvV0(BaseV0):
         for key, wt in self.rwd_keys_wt.items()
     )
 
-    if rwd_dict["solved"]:
-      self.cur_rally += 1
-    if rwd_dict["solved"] and self.cur_rally < self.rally_count:
-      rwd_dict["done"] = False
-      rwd_dict["solved"] = False
-      self.obs_dict["time"] = 0
-      self.sim.data.time = 0
-      self.contact_trajectory = []
-      self.relaunch_ball()
     return rwd_dict
 
   def ref_traj(self, traj_path=r"your_h5.h5"):
@@ -556,7 +545,29 @@ class TableTennisEnvV0(BaseV0):
           )
           / 2.0
       )
-    return super().step(processed_controls, **kwargs)
+    
+    results = super().step(processed_controls, **kwargs)
+    if len(results) == 5:
+        obs, reward, terminated, truncated, info = results
+        done = terminated or truncated
+    else:
+        obs, reward, done, info = results
+    
+    # Handle multi-rally relaunching here instead of get_reward_dict
+    if info['rwd_dict']['solved'] > 0 and not done:
+        self.cur_rally += 1
+        if self.cur_rally < self.rally_count:
+            # Relaunch without ending episode
+            self.obs_dict["time"] = np.array([0.0])
+            self.sim.data.time = 0.0
+            self.contact_trajectory = []
+            self.relaunch_ball()
+            # Update observation after relaunch
+            obs = self.get_obs()
+            
+    if len(results) == 5:
+        return obs, reward, terminated, truncated, info
+    return obs, reward, done, info
 
   def _preprocess_spec(self, spec, remove_body_collisions=True, add_left_arm=True):
     # We'll process the string path to:

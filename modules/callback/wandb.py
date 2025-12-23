@@ -11,7 +11,7 @@ class WandbCallback(BaseCallback):
   def _on_rollout_start(self) -> None:
     # Log training metrics from the previous iteration's training phase
     metrics = {}
-    for k in ['value_loss', 'entropy_loss', 'policy_gradient_loss','loss', 'approx_kl', 'explained_variance', 'std']:
+    for k in ['value_loss', 'entropy_loss', 'policy_gradient_loss','loss', 'approx_kl', 'explained_variance', 'std', 'clip_fraction']:
       sb3_key = f"train/{k}"
       if sb3_key in self.logger.name_to_value:
         metrics[sb3_key] = self.logger.name_to_value[sb3_key]

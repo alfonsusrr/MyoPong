@@ -4,7 +4,7 @@ import torch
 import numpy as np
 from typing import Optional
 from torch import nn
-from torch.distributions import MultivariateNormal
+from torch.distributions import MultivariateNormal, LowRankMultivariateNormal
 from typing import Tuple
 from torch.distributions import Normal
 from stable_baselines3.common.distributions import DiagGaussianDistribution, TanhBijector, StateDependentNoiseDistribution
@@ -43,9 +43,19 @@ class LatticeNoiseDistribution(DiagGaussianDistribution):
         action_variance = std[..., : self.action_dim] ** 2
         latent_variance = std[..., self.action_dim :] ** 2
 
-        sigma_mat = (self.mean_actions.weight * latent_variance[..., None, :]).matmul(self.mean_actions.weight.T)
-        sigma_mat[..., range(self.action_dim), range(self.action_dim)] += action_variance
-        self.distribution = MultivariateNormal(mean_actions, sigma_mat)
+        # Memory efficient: sigma_mat = W @ diag(latent_variance) @ W.T
+        # We avoid creating (batch, action_dim, latent_dim) intermediates
+        # weight shape: (action_dim, latent_dim)
+        # latent_variance shape: (..., latent_dim)
+        weight = self.mean_actions.weight
+        sigma_mat = torch.einsum('...k,jk,mk->...jm', latent_variance, weight, weight)
+
+        # Add independent variance to diagonal
+        device = sigma_mat.device
+        diag_indices = torch.arange(self.action_dim, device=device)
+        sigma_mat[..., diag_indices, diag_indices] += action_variance
+
+        self.distribution = MultivariateNormal(mean_actions, sigma_mat, validate_args=False)
         return self
 
     def log_prob(self, actions: torch.Tensor) -> torch.Tensor:
@@ -270,12 +280,16 @@ class LatticeStateDependentNoiseDistribution(StateDependentNoiseDistribution):
         latent_corr_variance = torch.mm(self._latent_sde**2, corr_std**2)  # Variance of the hidden state
         latent_ind_variance = torch.mm(self._latent_sde**2, ind_std**2) + self.std_reg**2  # Variance of the action
 
-        # First consider the correlated variance
-        sigma_mat = self.alpha**2 * (self.mean_actions_net.weight * latent_corr_variance[:, None, :]).matmul(
-            self.mean_actions_net.weight.T
-        )
-        # Then the independent one, to be added to the diagonal
-        sigma_mat[:, range(self.action_dim), range(self.action_dim)] += latent_ind_variance
+        # Memory efficient: sigma_mat = alpha^2 * W @ diag(latent_corr_variance) @ W.T
+        # We avoid creating (batch, action_dim, latent_dim) intermediates
+        weight = self.mean_actions_net.weight
+        sigma_mat = (self.alpha**2) * torch.einsum('ik,jk,mk->ijm', latent_corr_variance, weight, weight)
+
+        # Add independent variance to diagonal
+        device = sigma_mat.device
+        diag_indices = torch.arange(self.action_dim, device=device)
+        sigma_mat[:, diag_indices, diag_indices] += latent_ind_variance
+
         self.distribution = MultivariateNormal(loc=mean_actions, covariance_matrix=sigma_mat, validate_args=False)
         return self
 

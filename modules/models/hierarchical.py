@@ -9,8 +9,10 @@ class HierarchicalTableTennisWrapper(gym.Wrapper):
     A wrapper for TableTennisEnvV0 that augments the observation with 
     physics-based predictions following the logic in pong_v0.py.
     """
-    def __init__(self, env):
+    def __init__(self, env, update_freq=1):
         super().__init__(env)
+        self._update_freq = update_freq
+        self._step_count = 0
         # Augment the observation space: 
         # Original features + 3 (pred_ball_pos) + 4 (paddle_ori_ideal) = +7
         if hasattr(self.env.observation_space, 'shape'):
@@ -29,6 +31,7 @@ class HierarchicalTableTennisWrapper(gym.Wrapper):
         self._ball_radius = None
         self._net_height = None
         self._frozen_goal = None
+        self._cached_goal = None
         self._last_goal = None
         
         # Proper slew rate limits for different units
@@ -69,81 +72,82 @@ class HierarchicalTableTennisWrapper(gym.Wrapper):
         if self._gravity is None:
             self._get_env_constants()
 
-        if hasattr(env_unwrapped, 'obs_dict'):
-            obs_dict = env_unwrapped.obs_dict
-            
-            ball_pos = obs_dict.get('ball_pos')
-            ball_vel = obs_dict.get('ball_vel')
-            paddle_pos = obs_dict.get('paddle_pos')
-            touching_info = obs_dict.get('touching_info')
-            
-            if ball_pos is not None and ball_vel is not None and paddle_pos is not None:
-                # Stabilization logic from eval_physics.py
-                ball_pos_x = ball_pos[0]
-                paddle_pos_x = paddle_pos[0]
-                ball_vel_x = ball_vel[0]
-                # touching_info is [paddle, own, opponent, net, ground, env]
-                paddle_touch = touching_info[0] if touching_info is not None else 0
-                
-                # 1. Freeze target if ball is very close to impact (dist < 0.05)
-                # 2. Freeze target if paddle is already touching the ball
-                # 3. Freeze target if ball is moving away (hit already happened)
-                should_freeze = (abs(ball_pos_x - paddle_pos_x) < 0.05) or (paddle_touch > 0) or (ball_vel_x < -0.05)
-                
-                if should_freeze and self._frozen_goal is not None:
-                    goal = self._frozen_goal
-                else:
-                    # Use current paddle position (can be clamped to stable X if desired)
-                    stable_paddle_pos = paddle_pos.copy()
-                    
-                    # Use the refined physics-based utility function
-                    pred_ball_pos, paddle_ori_ideal = predict_ball_trajectory(
-                        ball_pos, ball_vel, stable_paddle_pos,
-                        gravity=self._gravity,
-                        table_z=self._table_z,
-                        ball_radius=self._ball_radius,
-                        net_height=self._net_height
-                    )
-                    
-                    goal = np.concatenate([pred_ball_pos, paddle_ori_ideal])
-                    
-                    # Update frozen goal if we are approaching the freeze zone
-                    # Threshold 1.4 based on paddle being at ~1.6
-                    if ball_pos_x > 1.4:
-                        self._frozen_goal = goal.copy()
-                
-                # Apply Slew Rate Limiting (Properly Split for Pos/Ori)
-                if self._last_goal is not None:
-                    # Split 7D goal into 3D pos and 4D ori
-                    last_pos = self._last_goal[:3]
-                    last_ori = self._last_goal[3:]
-                    curr_pos = goal[:3]
-                    curr_ori = goal[3:]
-                    
-                    # 1. Clip Position Delta
-                    delta_pos = curr_pos - last_pos
-                    dist_pos = np.linalg.norm(delta_pos)
-                    if dist_pos > self._max_pos_delta:
-                        curr_pos = last_pos + (delta_pos / (dist_pos + 1e-9)) * self._max_pos_delta
-                        
-                    # 2. Clip Orientation Delta (Euclidean approx for quaternions)
-                    delta_ori = curr_ori - last_ori
-                    dist_ori = np.linalg.norm(delta_ori)
-                    if dist_ori > self._max_rot_delta:
-                        curr_ori = last_ori + (delta_ori / (dist_ori + 1e-9)) * self._max_rot_delta
-                        # Re-normalize to ensure it's still a valid quaternion
-                        curr_ori = curr_ori / (np.linalg.norm(curr_ori) + 1e-9)
-                    
-                    # Reconstruct goal
-                    goal = np.concatenate([curr_pos, curr_ori])
-                
-                self._last_goal = goal.copy()
-                
-                return np.concatenate([obs, goal]).astype(np.float32)
+        obs_dict = getattr(env_unwrapped, 'obs_dict', None)
+        if obs_dict is None:
+            return obs
+
+        # Fast extraction of needed values
+        ball_pos = obs_dict.get('ball_pos')
+        ball_vel = obs_dict.get('ball_vel')
+        paddle_pos = obs_dict.get('paddle_pos')
         
-        return obs
+        if ball_pos is None or ball_vel is None or paddle_pos is None:
+            return obs
+
+        ball_pos_x = ball_pos[0]
+        
+        # Determine if we should update the goal
+        should_recalculate = (self._step_count % self._update_freq == 0) or (self._cached_goal is None)
+        
+        # Check freeze conditions early
+        if self._frozen_goal is not None:
+            ball_vel_x = ball_vel[0]
+            paddle_pos_x = paddle_pos[0]
+            touching = obs_dict.get('touching_info')
+            paddle_touch = touching[0] if touching is not None else 0
+            
+            if (abs(ball_pos_x - paddle_pos_x) < 0.05) or (paddle_touch > 0) or (ball_vel_x < -0.05):
+                goal = self._frozen_goal.copy()
+            elif should_recalculate:
+                pred_ball_pos, paddle_ori_ideal = predict_ball_trajectory(
+                    ball_pos, ball_vel, paddle_pos,
+                    gravity=self._gravity, table_z=self._table_z,
+                    ball_radius=self._ball_radius, net_height=self._net_height
+                )
+                goal = np.concatenate([pred_ball_pos, paddle_ori_ideal])
+                self._cached_goal = goal.copy()
+                if ball_pos_x > 1.4:
+                    self._frozen_goal = goal.copy()
+            else:
+                goal = self._cached_goal.copy()
+        else:
+            if should_recalculate:
+                pred_ball_pos, paddle_ori_ideal = predict_ball_trajectory(
+                    ball_pos, ball_vel, paddle_pos,
+                    gravity=self._gravity, table_z=self._table_z,
+                    ball_radius=self._ball_radius, net_height=self._net_height
+                )
+                goal = np.concatenate([pred_ball_pos, paddle_ori_ideal])
+                self._cached_goal = goal.copy()
+                if ball_pos_x > 1.4:
+                    self._frozen_goal = goal.copy()
+            else:
+                goal = self._cached_goal.copy()
+        
+        # Apply Slew Rate Limiting
+        if self._last_goal is not None:
+            last_goal = self._last_goal
+            
+            # 1. Position Slew
+            delta_pos = goal[:3] - last_goal[:3]
+            dist_pos = np.linalg.norm(delta_pos)
+            if dist_pos > self._max_pos_delta:
+                goal[:3] = last_goal[:3] + (delta_pos * (self._max_pos_delta / (dist_pos + 1e-9)))
+                
+            # 2. Orientation Slew
+            delta_ori = goal[3:] - last_goal[3:]
+            dist_ori = np.linalg.norm(delta_ori)
+            if dist_ori > self._max_rot_delta:
+                curr_ori = last_goal[3:] + (delta_ori * (self._max_rot_delta / (dist_ori + 1e-9)))
+                # Normalize
+                goal[3:] = curr_ori / (np.linalg.norm(curr_ori) + 1e-9)
+        
+        self._last_goal = goal.copy()
+        return np.concatenate([obs, goal]).astype(np.float32)
 
     def reset(self, **kwargs):
+        self._step_count = 0
+        self._cached_goal = None
         result = self.env.reset(**kwargs)
         # Clear cached constants on reset in case model changed
         self._gravity = None 
@@ -157,6 +161,7 @@ class HierarchicalTableTennisWrapper(gym.Wrapper):
 
     def step(self, action):
         result = self.env.step(action)
+        self._step_count += 1
         if len(result) == 5:
             obs, reward, terminated, truncated, info = result
             return self._augment_obs(obs), reward, terminated, truncated, info
