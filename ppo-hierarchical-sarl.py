@@ -2,10 +2,19 @@ import os
 import time
 import argparse
 import warnings
+# suppress all warnings
+warnings.filterwarnings("ignore")
+
 import joblib
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Union
+
+def linear_schedule(initial_value: float) -> Callable[[float], float]:
+  def func(progress_remaining: float) -> float:
+    return progress_remaining * initial_value
+  return func
 from dotenv import load_dotenv
+import torch
 
 import numpy as np
 from myosuite.utils import gym
@@ -16,14 +25,14 @@ from stable_baselines3.common.callbacks import CheckpointCallback
 
 from SAR.SynergyWrapper import SynNoSynWrapper
 from modules.models.hierarchical import HierarchicalTableTennisWrapper
+from modules.models.lattice import LatticeActorCriticPolicy
 from modules.callback.progress import TqdmProgressCallback
 from modules.callback.evaluator import PeriodicEvaluator
 from modules.callback.wandb import WandbCallback
 from modules.callback.renderer import PeriodicVideoRecorder
+from modules.callback.checkpoint import SaveVecNormalizeCallback, resolve_checkpoint_path
 from modules.envs.curriculum import tabletennis_curriculum_kwargs
 
-# suppress all warnings
-warnings.filterwarnings("ignore")
 
 load_dotenv()
 
@@ -38,38 +47,18 @@ def prepare_env(env_id: str, difficulty: int = 0) -> Any:
   return env
 
 def make_env(
-    env_id: str, seed: int, log_dir: str, ica, pca, scaler, phi, difficulty: int = 0
+    env_id: str, seed: int, log_dir: str, ica, pca, scaler, phi, difficulty: int = 0, update_freq: int = 1
 ) -> Callable[[], Monitor]:
   def _init():
     env = prepare_env(env_id, difficulty=difficulty)
     env.seed(seed)
     # Apply Hierarchical wrapper first (Observation augmentation)
-    env = HierarchicalTableTennisWrapper(env)
+    env = HierarchicalTableTennisWrapper(env, update_freq=update_freq)
     # Then apply SAR wrapper (Action space modification)
     env = SynNoSynWrapper(env, ica, pca, scaler, phi)
     return Monitor(env, filename=os.path.join(log_dir, f"monitor_{seed}.csv"))
 
   return _init
-
-def resolve_checkpoint_path(checkpoint_target: str) -> str:
-  target = Path(checkpoint_target).expanduser().resolve()
-  if target.is_dir():
-    checkpoints = sorted(
-        target.glob("*.zip"), key=lambda path: path.stat().st_mtime
-    )
-    if not checkpoints:
-      raise FileNotFoundError(f"No checkpoint archives found in {target}")
-    return str(checkpoints[-1])
-
-  if target.is_file():
-    return str(target)
-
-  if target.suffix != ".zip":
-    zipped_candidate = target.with_suffix(".zip")
-    if zipped_candidate.is_file():
-      return str(zipped_candidate)
-
-  raise FileNotFoundError(f"Checkpoint path {checkpoint_target} does not exist")
 
 def parse_args() -> argparse.Namespace:
   parser = argparse.ArgumentParser(description="PPO Hierarchical SARL trainer for Table Tennis")
@@ -82,7 +71,7 @@ def parse_args() -> argparse.Namespace:
   parser.add_argument("--sar-dir", type=str, default="SAR",
                       help="Directory containing SAR artifacts (ica.pkl, pca.pkl, scaler.pkl)")
   parser.add_argument("--seed", type=int, default=0, help="Random seed")
-  parser.add_argument("--num-envs", type=int, default=4,
+  parser.add_argument("--num-envs", type=int, default=12,
                       help="Number of parallel environments")
   parser.add_argument("--policy", type=str, default="MlpPolicy",
                       help="Stable-Baselines3 policy (MlpPolicy only)")
@@ -110,7 +99,7 @@ def parse_args() -> argparse.Namespace:
   )
   parser.add_argument("--eval-freq", type=int, default=10000,
                       help="Evaluate policy every N steps")
-  parser.add_argument("--eval-envs", type=int, default=2,
+  parser.add_argument("--eval-envs", type=int, default=4,
                       help="Number of parallel eval envs")
   parser.add_argument("--eval-episodes", type=int, default=10,
                       help="Total eval episodes per evaluation run")
@@ -118,14 +107,35 @@ def parse_args() -> argparse.Namespace:
                       help="Number of steps per environment per update")
   parser.add_argument("--batch-size", type=int, default=2048,
                       help="Size of the batch for training")
-  parser.add_argument("--difficulty", type=int, default=2,
+  parser.add_argument("--difficulty", type=int, default=0,
                       help="Curriculum difficulty level (0-4)")
+  parser.add_argument("--update-freq", type=int, default=10,
+                      help="How many steps to reuse the predicted goal in Hierarchical wrapper")
+  parser.add_argument("--use-lattice", action="store_true", default=False,
+                      help="Use LatticeActorCriticPolicy for exploration")
+  parser.add_argument("--lattice-alpha", type=float, default=1.0,
+                      help="Alpha parameter for Lattice noise (relative weight of latent noise)")
+  parser.add_argument("--ent-coef", type=float, default=0.0001,
+                      help="Entropy coefficient for PPO")
+  parser.add_argument("--learning-rate", type=float, default=1e-4,
+                      help="Initial learning rate for PPO")
+  parser.add_argument("--norm-obs", action="store_true", default=True,
+                      help="Normalize observations using VecNormalize")
+  parser.add_argument("--norm-reward", action="store_true", default=True,
+                      help="Normalize rewards using VecNormalize")
+  parser.add_argument("--clip-obs", type=float, default=10.0,
+                      help="Clipping value for observations")
+  parser.add_argument("--clip-reward", type=float, default=10.0,
+                      help="Clipping value for rewards")
   return parser.parse_args()
 
 def main() -> None:
   args = parse_args()
 
   run_id = f"run-ppo-h-sarl-{time.strftime('%Y%m%d-%H%M%S')}-lvl{args.difficulty}"
+  if args.use_lattice:
+      args.wandb_project += "-lattice"
+      run_id += "-lattice"
 
   log_dir = os.path.abspath(os.path.join(args.log_dir, run_id))
   os.makedirs(log_dir, exist_ok=True)
@@ -151,7 +161,8 @@ def main() -> None:
           pca=pca,
           scaler=scaler,
           phi=phi,
-          difficulty=args.difficulty
+          difficulty=args.difficulty,
+          update_freq=args.update_freq
       )
       for idx in range(args.num_envs)
   ]
@@ -162,19 +173,29 @@ def main() -> None:
   train_env = SubprocVecEnv(make_env_fns)
   train_env = VecMonitor(train_env)
   vec_env = VecNormalize(
-      train_env, training=True, norm_obs=True, norm_reward=True, clip_obs=10.0
+      train_env, 
+      training=True, 
+      norm_obs=args.norm_obs, 
+      norm_reward=args.norm_reward, 
+      clip_obs=args.clip_obs,
+      clip_reward=args.clip_reward
   )
 
   # Eval Envs
   make_eval_env_fns = [
       make_env(env_id=args.env_id, seed=args.seed + 12345 + idx, log_dir=log_dir,
-               ica=ica, pca=pca, scaler=scaler, phi=phi, difficulty=args.difficulty)
+               ica=ica, pca=pca, scaler=scaler, phi=phi, difficulty=args.difficulty,
+               update_freq=args.update_freq)
       for idx in range(args.eval_envs)
   ]
   eval_env = SubprocVecEnv(make_eval_env_fns)
   eval_env = VecMonitor(eval_env)
   eval_vec_env = VecNormalize(
-      eval_env, training=False, norm_obs=True, norm_reward=False, clip_obs=10.0
+      eval_env, 
+      training=False, 
+      norm_obs=args.norm_obs, 
+      norm_reward=False, 
+      clip_obs=args.clip_obs
   )
   eval_vec_env.obs_rms = vec_env.obs_rms
 
@@ -185,16 +206,44 @@ def main() -> None:
     metrics_env = gym.make(args.env_id)
   
   # Hierarchical wrapping for consistency
-  metrics_env = HierarchicalTableTennisWrapper(metrics_env)
-  metrics_env = metrics_env.unwrapped
-
+  metrics_env = HierarchicalTableTennisWrapper(metrics_env, update_freq=args.update_freq)
+  # Do not unwrap, so the wrapper's features are available to the evaluator
+  
   checkpoint_save_freq = max(1, args.checkpoint_freq // args.num_envs)
   model = None
   remaining_timesteps = args.total_timesteps
 
+  policy_type = LatticeActorCriticPolicy if args.use_lattice else args.policy
+  policy_kwargs = dict(
+      log_std_init=-1.0,
+      net_arch=dict(
+          pi=[512, 512],
+          vf=[256, 256],
+      ),
+      activation_fn=torch.nn.SiLU,
+      ortho_init=True,
+  )
+  if args.use_lattice:
+      policy_kwargs.update(dict(
+          alpha=args.lattice_alpha,
+      ))
+
   if args.resume_from_checkpoint:
     checkpoint_path = resolve_checkpoint_path(args.resume_from_checkpoint)
     print(f"Resuming PPO from checkpoint: {checkpoint_path}")
+    
+    # Try to load VecNormalize statistics if they exist
+    vecnorm_path = Path(checkpoint_path).parent.parent / "vecnormalize.pkl"
+    if vecnorm_path.exists():
+      print(f"Loading VecNormalize statistics from {vecnorm_path}")
+      vec_env = VecNormalize.load(str(vecnorm_path), train_env)
+      vec_env.training = True
+      vec_env.norm_obs = args.norm_obs
+      vec_env.norm_reward = args.norm_reward
+      
+      # Sync eval env
+      eval_vec_env.obs_rms = vec_env.obs_rms
+    
     model = PPO.load(checkpoint_path, env=vec_env)
     current_timesteps = model.num_timesteps
     remaining_timesteps = args.total_timesteps - current_timesteps
@@ -203,23 +252,22 @@ def main() -> None:
       remaining_timesteps = 0
   else:
     model = PPO(
-        policy=args.policy,
+        policy=policy_type,
         env=vec_env,
+        learning_rate=linear_schedule(args.learning_rate),
         n_steps=args.n_steps,
         batch_size=args.batch_size,
+        ent_coef=args.ent_coef,
         verbose=1,
         seed=args.seed,
         tensorboard_log=os.path.abspath(args.tensorboard_log) if args.tensorboard_log else None,
         use_sde=True,
         sde_sample_freq=4,
-        policy_kwargs=dict(
-            log_std_init=-2,
-            net_arch=[256, 256]
-        ),
+        policy_kwargs=policy_kwargs,
     )
 
   callbacks = [
-      CheckpointCallback(
+      SaveVecNormalizeCallback(
           save_freq=checkpoint_save_freq,
           save_path=checkpoint_dir,
           name_prefix="ppo_h_sarl",
@@ -228,7 +276,10 @@ def main() -> None:
   
   if args.wandb_project:
     import wandb as _wandb
-    _wandb.init(project=args.wandb_project, name=run_id, config=vars(args))
+    project_name = args.wandb_project
+    if args.use_lattice:
+        project_name += "-lattice"
+    _wandb.init(project=project_name, name=run_id, config=vars(args))
     callbacks.append(WandbCallback())
 
   callbacks.append(PeriodicEvaluator(
@@ -245,7 +296,7 @@ def main() -> None:
     os.makedirs(video_dir, exist_ok=True)
     render_monitor_file = os.path.join(log_dir, "renderer_monitor.csv")
     def _wrap_env_for_rendering(env):
-      env = HierarchicalTableTennisWrapper(env)
+      env = HierarchicalTableTennisWrapper(env, update_freq=args.update_freq)
       env = SynNoSynWrapper(env, ica, pca, scaler, phi)
       return Monitor(env, filename=render_monitor_file)
 

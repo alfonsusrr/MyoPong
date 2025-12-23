@@ -8,6 +8,73 @@ import numpy as np
 from myosuite.utils import gym
 import os
 import imageio
+from scipy.spatial.transform import Rotation as R
+
+def heuristic_policy(obs_vec, ctrl_min, ctrl_max, last_actions, frozen_actions):
+    """
+    Improved heuristic policy with slew rate limiting and impact stabilization.
+    obs_vec: (N_envs, 32)
+    """
+    # 0:3 ball_pos, 3:6 ball_vel, 6:9 paddle_pos, 9:12 paddle_vel
+    ball_pos_x = obs_vec[:, 0]
+    ball_vel_x = obs_vec[:, 3]
+    paddle_touch = obs_vec[:, 19]
+
+    paddle_pos_x = obs_vec[:, 6]
+    
+    # Extract pre-calculated targets from observations
+    pred_ball_pos = obs_vec[:, 25:28]
+    paddle_ori_ideal = obs_vec[:, 28:32]
+    
+    # Paddle offset in body frame
+    paddle_offset_body_frame = np.array([-5.5743e-05, 2.0686e-02, 6.6874e-02])
+    base_pos = np.array([1.8, 0.5, 1.13])
+    
+    pos_min, pos_max = ctrl_min[:3], ctrl_max[:3]
+    rot_min, rot_max = ctrl_min[3:6], ctrl_max[3:6]
+    
+    target_actions = np.zeros((obs_vec.shape[0], 6))
+    
+    for i in range(obs_vec.shape[0]):
+        # Stabilization logic:
+        # 1. Freeze target if ball is very close to impact (x > 1.5)
+        # 2. Freeze target if paddle is already touching the ball
+        # 3. Freeze target if ball is moving away (hit already happened)
+        should_freeze = (abs(ball_pos_x[i] - paddle_pos_x[i]) < 0.05) or (paddle_touch[i] > 0) or (ball_vel_x[i] < -0.05)
+        
+        if should_freeze and frozen_actions[i] is not None:
+            target_actions[i] = frozen_actions[i]
+        else:
+            # Calculate new target action
+            q = paddle_ori_ideal[i]
+            r_ideal = R.from_quat([q[1], q[2], q[3], q[0]])
+            rotated_offset = r_ideal.apply(paddle_offset_body_frame)
+            
+            desired_joint_pos = pred_ball_pos[i] - base_pos - rotated_offset
+            action_pos = 2.0 * (desired_joint_pos - pos_min) / (pos_max - pos_min) - 1.0
+            
+            desired_euler = r_ideal.as_euler('xyz')
+            action_rot = 2.0 * (desired_euler - rot_min) / (rot_max - rot_min) - 1.0
+            
+            new_action = np.concatenate([action_pos, action_rot])
+            target_actions[i] = np.clip(new_action, -1.0, 1.0)
+            
+            # Update frozen action if we are approaching the freeze zone
+            if ball_pos_x[i] > 1.4:
+                frozen_actions[i] = target_actions[i].copy()
+
+    # Slew Rate Limiting: limit max change per step to prevent "spinning" and instability
+    # Max change per step in normalized [-1, 1] units
+    # 0.1 allows full range travel in ~20 steps (0.2 seconds at 100Hz)
+    max_delta = 0.1
+    
+    if last_actions is not None:
+        delta = target_actions - last_actions
+        actions = last_actions + np.clip(delta, -max_delta, max_delta)
+    else:
+        actions = target_actions
+        
+    return actions
 
 def test_reward():
     env_id = "myoChallengePongP0-v0"
@@ -17,7 +84,11 @@ def test_reward():
     ball_xyz_range = {'high': [-0.8, 0.5, 1.5], 'low': [-1.25, -0.5, 1.4]}
     
     env = gym.make(env_id, ball_xyz_range=ball_xyz_range, ball_qvel=True)
-    env.reset()
+    reset_result = env.reset()
+    if isinstance(reset_result, tuple):
+        obs, info = reset_result
+    else:
+        obs = reset_result
     
     sim = env.sim
     id_info = env.id_info
@@ -38,8 +109,6 @@ def test_reward():
     print(f"Initial Paddle Site Pos: {paddle_site_pos}")
     print(f"Initial Paddle Geom Pos: {paddle_geom_pos}")
     
-    from scipy.spatial.transform import Rotation as R
-
     # Check reach_err calculation in env
     obs_dict = env.unwrapped.get_obs_dict(sim)
     reach_err = obs_dict['reach_err']
@@ -67,100 +136,63 @@ def test_reward():
     print(f"Ctrl Max: {ctrl_max}")
 
     total_reward = 0
-    last_action = None
-    alpha = 0.5  # Smoothing factor
-    locked_impact = None
+    last_actions = np.zeros((1, 6))
+    frozen_actions = [None]
     
-    # Calculate paddle offset once
-    # Body Pos (joints=0): [1.8  0.5  1.13]
-    # Geom Pos (joints=0): [1.7999 0.5207 1.1969]
-    # We'll use the values from check_paddle.py for precision
-    paddle_offset_body_frame = np.array([-5.5743e-05, 2.0686e-02, 6.6874e-02])
-
     # Let's step and see how it changes
     for i in range(200):
-        # Get current state for prediction
-        obs_dict = env.unwrapped.get_obs_dict(env.sim)
-        curr_ball_pos = obs_dict['ball_pos']
-        curr_ball_vel = obs_dict['ball_vel']
-        curr_paddle_pos = obs_dict['paddle_pos']
-        curr_paddle_vel = obs_dict['paddle_vel']
-        
-        # Fixed impact plane for stability
-        target_x = 1.62
-        
-        # Estimate time to impact
-        vx = curr_ball_vel[0]
-        dx = target_x - curr_ball_pos[0]
-        dt = dx / vx if vx > 0.1 else 2.0
-        
-        if dt < 0.08 and locked_impact is not None:
-            # Lock prediction when very close to impact to avoid jitters
-            pred_ball_pos, n_ideal, paddle_ori_ideal = locked_impact
-        else:
-            # Use stable X-plane for prediction
-            stable_paddle_pos = curr_paddle_pos.copy()
-            stable_paddle_pos[0] = target_x
-            
-            pred_ball_pos, n_ideal, paddle_ori_ideal = env.unwrapped.calculate_prediction(
-                curr_ball_pos, curr_ball_vel, stable_paddle_pos, curr_paddle_vel
-            )
-            
-            if dt < 0.15:
-                locked_impact = (pred_ball_pos, n_ideal, paddle_ori_ideal)
-
-        # Calculate desired action based on prediction
-        base_pos = np.array([1.8, 0.5, 1.13])
-        
-        # Account for offset and rotation
-        r_ideal = R.from_quat([paddle_ori_ideal[1], paddle_ori_ideal[2], paddle_ori_ideal[3], paddle_ori_ideal[0]])
-        rotated_offset = r_ideal.apply(paddle_offset_body_frame)
-        
-        # Desired joint positions (relative to base)
-        # joint_pos = pred_ball_pos - base_pos - rotated_offset
-        desired_joint_pos = pred_ball_pos - base_pos - rotated_offset
-        
-        # Normalize to [-1, 1] using the actuator control ranges
-        pos_min = ctrl_min[:3]
-        pos_max = ctrl_max[:3]
-        action_pos = 2.0 * (desired_joint_pos - pos_min) / (pos_max - pos_min) - 1.0
-        action_pos = np.clip(action_pos, -1.0, 1.0)
-        
-        # Calculate ideal orientation (Euler angles)
-        desired_euler = r_ideal.as_euler('xyz')
-        
-        rot_min = ctrl_min[3:6]
-        rot_max = ctrl_max[3:6]
-        action_rot = 2.0 * (desired_euler - rot_min) / (rot_max - rot_min) - 1.0
-        action_rot = np.clip(action_rot, -1.0, 1.0)
-        
-        # Combine position and rotation actions
-        target_action = np.concatenate([action_pos, action_rot])
-        
-        # Smoothing
-        if last_action is None:
-            action = target_action
-        else:
-            action = alpha * target_action + (1.0 - alpha) * last_action
-        
-        last_action = action.copy()
+        # Use heuristic policy from eval_physics.py
+        # obs is the vector from env.reset() or env.step()
+        obs_vec = obs.reshape(1, -1)
+        actions = heuristic_policy(obs_vec, ctrl_min, ctrl_max, last_actions, frozen_actions)
+        last_actions = actions.copy()
+        action = actions[0]
         
         # Step environment
         step_results = env.step(action)
         print(f"Sim Ctrl (after step): {env.sim.data.ctrl[:6]}")
         if len(step_results) == 5:
-            obs_vec, rwd, terminated, truncated, info = step_results
+            obs, rwd, terminated, truncated, info = step_results
             done = terminated or truncated
         else:
-            obs_vec, rwd, done, info = step_results
+            obs, rwd, done, info = step_results
         
-        # Get the named observations from the unwrapped environment
+        # Get the named observations from the unwrapped environment for logging
         obs_dict = env.unwrapped.get_obs_dict(env.sim)
         curr_ball_pos = obs_dict['ball_pos']
         curr_paddle_pos = obs_dict['paddle_pos']
-        ball_vel = obs_dict["ball_vel"]
-        touching_info = obs_dict["touching_info"]
+        curr_ball_vel = obs_dict['ball_vel']
+        touching_info = obs_dict['touching_info']
+        pred_ball_pos = obs_dict['pred_ball_pos']
+        paddle_ori_ideal = obs_dict['paddle_ori_ideal']
         
+        # --- COMPARISON START (predict_traj vs env) ---
+        from modules.utils.predict_traj import predict_ball_trajectory
+        g = float(-env.sim.model.opt.gravity[2])
+        own_gid = env.unwrapped.id_info.own_half_gid
+        table_z_plane = float(env.sim.data.geom_xpos[own_gid][2] + env.sim.model.geom_size[own_gid][2])
+        ball_r = float(env.sim.model.geom_size[env.unwrapped.id_info.ball_gid][0])
+        z_contact = table_z_plane + ball_r
+        
+        # stable_paddle_pos as used in environment's get_obs_dict
+        stable_paddle_pos = curr_paddle_pos.copy()
+        stable_paddle_pos[0] = 1.62
+        
+        pred_ball_pos_2, paddle_ori_ideal_2 = predict_ball_trajectory(
+            curr_ball_pos, curr_ball_vel, stable_paddle_pos,
+            gravity=g,
+            table_z=z_contact,
+            ball_radius=ball_r
+        )
+        
+        pos_diff = np.linalg.norm(pred_ball_pos - pred_ball_pos_2)
+        ori_diff = np.linalg.norm(paddle_ori_ideal - paddle_ori_ideal_2)
+        if pos_diff > 1e-6 or ori_diff > 1e-6:
+            print(f"!!! COMPARISON MISMATCH at step {i+1} !!!")
+            print(f"  Pos diff: {pos_diff:.8f}")
+            print(f"  Ori diff: {ori_diff:.8f}")
+        # --- COMPARISON END ---
+
         # touching_info is [paddle, own, opponent, net, ground, env]
         hit_paddle = touching_info[0] > 0
         if hit_paddle:
@@ -174,11 +206,13 @@ def test_reward():
         
         print(f"Step {i+1}:")
         print(f"  Ball Pos: {curr_ball_pos}")
-        print(f"  Ball Vel: {ball_vel}")
+        print(f"  Ball Vel: {curr_ball_vel}")
         print(f"  Paddle Pos: {curr_paddle_pos}")
         print(f"  Paddle Ori (Quat): {paddle_ori}")
         print(f"  Pred Ball Pos: {pred_ball_pos}")
         print(f"  Step Reward: {rwd:.4f}")
+
+        # frame capture...
 
         # rwd_dict = env.unwrapped.get_reward_dict(obs_dict)
 
