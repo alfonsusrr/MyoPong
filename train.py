@@ -16,14 +16,14 @@ def parse_args() -> argparse.Namespace:
     # Core Environment Arguments
     parser.add_argument("--env-id", type=str, default="myoChallengeTableTennisP1-v0", help="Gymnasium environment ID")
     parser.add_argument("--difficulty", type=int, default=1, help="Curriculum difficulty level (0-4)")
-    parser.add_argument("--num-envs", type=int, default=8, help="Number of parallel training environments")
+    parser.add_argument("--num-envs", type=int, default=12, help="Number of parallel training environments")
     parser.add_argument("--seed", type=int, default=0, help="Random seed")
     
     # Training Loop Arguments
     parser.add_argument("--total-timesteps", type=int, default=20000000, help="Total PPO training timesteps")
     parser.add_argument("--n-steps", type=int, default=4096, help="Steps per environment per update")
     parser.add_argument("--batch-size", type=int, default=2048, help="Size of the batch for training")
-    parser.add_argument("--learning-rate", type=float, default=3e-4, help="Initial learning rate")
+    parser.add_argument("--learning-rate", type=float, default=1e-4, help="Initial learning rate")
     parser.add_argument("--ent-coef", type=float, default=0.0001, help="Entropy coefficient")
     
     # Feature Toggles
@@ -60,16 +60,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wandb-project", type=str, default=None, help="W&B project name")
     parser.add_argument("--checkpoint-freq", type=int, default=1000000, help="How many steps between checkpoints")
     parser.add_argument("--score-threshold", type=float, default=0.05, help="Score improvement threshold to save a model checkpoint (0.0 to disable)")
-    parser.add_argument("--eval-freq", type=int, default=10000, help="Evaluate policy every N steps")
+    parser.add_argument("--eval-freq", type=int, default=100000, help="Evaluate policy every N steps")
     parser.add_argument("--eval-envs", type=int, default=4, help="Number of parallel eval envs")
-    parser.add_argument("--eval-episodes", type=int, default=10, help="Total eval episodes per evaluation run")
+    parser.add_argument("--eval-episodes", type=int, default=100, help="Total eval episodes per evaluation run")
     parser.add_argument("--render-steps", type=int, default=0, help="Record video every N steps (0 to disable)")
     parser.add_argument("--rollout-steps", type=int, default=500, help="Steps per saved rollout")
     
     # Miscellaneous
     parser.add_argument("--policy", type=str, default="MlpPolicy", help="Base policy (MlpPolicy/MlpLstmPolicy)")
-    parser.add_argument("--activation-fn", type=str, default="tanh", choices=["tanh", "relu", "silu", "elu"], help="Activation function for the policy")
-    parser.add_argument("--log-std-init", type=float, default=-1.0, help="Initial log standard deviation")
+    parser.add_argument("--activation-fn", type=str, default="silu", choices=["tanh", "relu", "silu", "elu"], help="Activation function for the policy")
+    parser.add_argument("--log-std-init", type=float, default=-0.5, help="Initial log standard deviation")
     parser.add_argument("--save-path", type=str, default=None, help="Path to save the final model")
     parser.add_argument("--resume-from-checkpoint", type=str, default=None, help="Path to a checkpoint to resume from")
 
