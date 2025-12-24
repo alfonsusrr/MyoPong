@@ -51,13 +51,13 @@ class TableTennisEnvV0(BaseV0):
       "reach_dist": 0.1,      # Reduced from 1.0
       "palm_dist": 0.1,       # Reduced from 1.0
       "paddle_quat": 0,
-      "alignment_y": 0.2,     # Reduced from 1.0
-      "alignment_z": 0.2,     # Reduced from 1.0
-      "paddle_quat_goal": 0.2, # Reduced from 1.0
-      "act_reg": 0.01,         # Reduced from 0.5
+      "alignment_y": 0.5,     # Reduced from 1.0
+      "alignment_z": 0.5,     # Reduced from 1.0
+      "paddle_quat_goal": 0.5, # Reduced from 1.0
+      "act_reg": 0.1,         # Reduced from 0.5
       "torso_up": 0.5,        # Reduced from 2.0
-      "sparse": 10.0,          # Touching ball is a big milestone
-      "solved": 50.0,         # Success is the ultimate goal
+      "sparse": 5.0,          # Touching ball is a big milestone
+      "solved": 100.0,         # Success is the ultimate goal
       "done": -5.0,           # Penalty for failure
   }
 
@@ -553,18 +553,18 @@ class TableTennisEnvV0(BaseV0):
     else:
         obs, reward, done, info = results
     
-    # Handle multi-rally relaunching
+    # Handle multi-rally relaunching here instead of get_reward_dict
     if info['rwd_dict']['solved'] > 0 and not done:
-      self.cur_rally += 1
-      if self.cur_rally < self.rally_count:
-        # Relaunch the ball for the next rally without ending the episode
-        self.obs_dict["time"] = np.array([0.0])
-        self.sim.data.time = 0.0
-        self.contact_trajectory = []
-        self.relaunch_ball()
-        # Refresh observation after relaunching
-        obs = self.get_obs()
-    
+        self.cur_rally += 1
+        if self.cur_rally < self.rally_count:
+            # Relaunch without ending episode
+            self.obs_dict["time"] = np.array([0.0])
+            self.sim.data.time = 0.0
+            self.contact_trajectory = []
+            self.relaunch_ball()
+            # Update observation after relaunch
+            obs = self.get_obs()
+            
     if len(results) == 5:
         return obs, reward, terminated, truncated, info
     return obs, reward, done, info
