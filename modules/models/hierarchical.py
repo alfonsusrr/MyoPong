@@ -7,11 +7,16 @@ from modules.utils.predict_traj import predict_ball_trajectory
 class HierarchicalTableTennisWrapper(gym.Wrapper):
     """
     A wrapper for TableTennisEnvV0 that augments the observation with 
-    physics-based predictions following the logic in pong_v0.py.
+    physics-based predictions and provides alignment rewards.
     """
-    def __init__(self, env, update_freq=1):
+    def __init__(self, env, update_freq=1, alignment_weights=None):
         super().__init__(env)
         self._update_freq = update_freq
+        self._alignment_weights = alignment_weights or {
+            "alignment_y": 0.5,
+            "alignment_z": 0.5,
+            "paddle_quat_goal": 0.5
+        }
         self._step_count = 0
         # Augment the observation space: 
         # Original features + 3 (pred_ball_pos) + 4 (paddle_ori_ideal) = +7
@@ -162,10 +167,68 @@ class HierarchicalTableTennisWrapper(gym.Wrapper):
     def step(self, action):
         result = self.env.step(action)
         self._step_count += 1
+        
+        # Extract goal from current observation augmentation
         if len(result) == 5:
             obs, reward, terminated, truncated, info = result
-            return self._augment_obs(obs), reward, terminated, truncated, info
+            aug_obs = self._augment_obs(obs)
+            # Use the cached goal from _augment_obs
+            goal = self._last_goal
+            reward, info = self._augment_reward(reward, info, goal)
+            return aug_obs, reward, terminated, truncated, info
         elif len(result) == 4:
             obs, reward, done, info = result
-            return self._augment_obs(obs), reward, done, info
+            aug_obs = self._augment_obs(obs)
+            goal = self._last_goal
+            reward, info = self._augment_reward(reward, info, goal)
+            return aug_obs, reward, done, info
         return result
+
+    def _augment_reward(self, reward, info, goal):
+        """Calculates alignment rewards based on the goal and updates the scalar reward."""
+        if 'rwd_dict' not in info or goal is None:
+            return reward, info
+            
+        env_unwrapped = self.env.unwrapped
+        obs_dict = getattr(env_unwrapped, 'obs_dict', None)
+        if obs_dict is None:
+            return reward, info
+
+        # 1. Calculate masks
+        # reach_err = paddle_pos - ball_pos
+        err_x = obs_dict["reach_err"][0] 
+        active_mask = float(err_x > -0.05)
+        
+        # Check if ball has hit paddle (PingpongContactLabels.PADDLE = 0)
+        contact_trajectory = getattr(env_unwrapped, 'contact_trajectory', [])
+        has_hit_paddle = any(any(getattr(item, 'value', item) == 0 for item in s) for s in contact_trajectory) 
+        active_alignment_mask = active_mask * (1.0 - float(has_hit_paddle))
+
+        # 2. Calculate alignment rewards
+        pred_ball_pos = goal[:3]
+        paddle_ori_goal = goal[3:]
+        
+        paddle_pos = obs_dict["paddle_pos"]
+        pred_err_y = np.abs(paddle_pos[1] - pred_ball_pos[1])
+        pred_err_z = np.abs(paddle_pos[2] - pred_ball_pos[2])
+        
+        alignment_y = active_alignment_mask * np.exp(-5.0 * pred_err_y)
+        alignment_z = active_alignment_mask * np.exp(-5.0 * pred_err_z)
+        
+        paddle_ori = obs_dict["paddle_ori"]
+        paddle_ori_err_goal = paddle_ori - paddle_ori_goal
+        paddle_quat_err_goal = np.linalg.norm(paddle_ori_err_goal)
+        paddle_quat_reward_goal = active_alignment_mask * np.exp(-5.0 * paddle_quat_err_goal)
+
+        # 3. Add to rwd_dict and update scalar reward
+        info['rwd_dict']["alignment_y"] = alignment_y
+        info['rwd_dict']["alignment_z"] = alignment_z
+        info['rwd_dict']["paddle_quat_goal"] = paddle_quat_reward_goal
+        
+        additional_reward = (
+            alignment_y * self._alignment_weights["alignment_y"] +
+            alignment_z * self._alignment_weights["alignment_z"] +
+            paddle_quat_reward_goal * self._alignment_weights["paddle_quat_goal"]
+        )
+        
+        return reward + additional_reward, info
