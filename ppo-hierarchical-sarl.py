@@ -21,7 +21,6 @@ from myosuite.utils import gym
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor, VecNormalize
 from stable_baselines3.common.monitor import Monitor
-from stable_baselines3.common.callbacks import CheckpointCallback
 
 from SAR.SynergyWrapper import SynNoSynWrapper
 from modules.models.hierarchical import HierarchicalTableTennisWrapper
@@ -30,7 +29,7 @@ from modules.callback.progress import TqdmProgressCallback
 from modules.callback.evaluator import PeriodicEvaluator
 from modules.callback.wandb import WandbCallback
 from modules.callback.renderer import PeriodicVideoRecorder
-from modules.callback.checkpoint import SaveVecNormalizeCallback, resolve_checkpoint_path
+from modules.callback.checkpoint import SaveVecNormalizeCallback, resolve_checkpoint_path, ScoreThresholdSaveCallback
 from modules.envs.curriculum import tabletennis_curriculum_kwargs
 
 
@@ -77,8 +76,8 @@ def parse_args() -> argparse.Namespace:
                       help="Stable-Baselines3 policy (MlpPolicy only)")
   parser.add_argument("--tensorboard-log", type=str, default=None,
                       help="Optional tensorboard log directory")
-  parser.add_argument("--checkpoint-freq", type=int, default=2500000,
-                      help="How many timesteps between checkpoints")
+  # parser.add_argument("--checkpoint-freq", type=int, default=2500000,
+  #                     help="How many timesteps between checkpoints")
   parser.add_argument("--wandb-project", type=str, default="myosuite-ppo-hierarchical-sarl",
                       help="Optional W&B project to log metrics to")
   parser.add_argument(
@@ -209,7 +208,6 @@ def main() -> None:
   metrics_env = HierarchicalTableTennisWrapper(metrics_env, update_freq=args.update_freq)
   # Do not unwrap, so the wrapper's features are available to the evaluator
   
-  checkpoint_save_freq = max(1, args.checkpoint_freq // args.num_envs)
   model = None
   remaining_timesteps = args.total_timesteps
 
@@ -266,11 +264,22 @@ def main() -> None:
         policy_kwargs=policy_kwargs,
     )
 
+  evaluator = PeriodicEvaluator(
+      eval_vec=eval_vec_env,
+      eval_freq=args.eval_freq,
+      eval_episodes=args.eval_episodes,
+      metrics_env=metrics_env,
+      verbose=1
+  )
+
   callbacks = [
-      SaveVecNormalizeCallback(
-          save_freq=checkpoint_save_freq,
+      evaluator,
+      ScoreThresholdSaveCallback(
+          evaluator=evaluator,
           save_path=checkpoint_dir,
+          threshold=0.05,
           name_prefix="ppo_h_sarl",
+          verbose=1
       )
   ]
   
@@ -281,14 +290,6 @@ def main() -> None:
         project_name += "-lattice"
     _wandb.init(project=project_name, name=run_id, config=vars(args))
     callbacks.append(WandbCallback())
-
-  callbacks.append(PeriodicEvaluator(
-      eval_vec=eval_vec_env,
-      eval_freq=args.eval_freq,
-      eval_episodes=args.eval_episodes,
-      metrics_env=metrics_env,
-      verbose=1
-  ))
 
   callbacks.append(TqdmProgressCallback(total_steps=args.total_timesteps))
 

@@ -95,6 +95,7 @@ class PeriodicEvaluator(BaseCallback):
     self.eval_episodes = eval_episodes
     self.metrics_env = metrics_env
     self._last_eval_step = 0
+    self.last_metrics = None
 
   def _on_step(self) -> bool:
     # Align last eval step on resume to prevent immediate long evaluations.
@@ -110,6 +111,7 @@ class PeriodicEvaluator(BaseCallback):
             episodes=self.eval_episodes,
             metrics_env=self.metrics_env
         )
+        self.last_metrics = metrics
         duration_s = time.time() - t0
         if metrics:
           # Log to W&B with eval/ prefix
