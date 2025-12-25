@@ -17,6 +17,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--env-id", type=str, default="myoChallengeTableTennisP1-v0", help="Gymnasium environment ID")
     parser.add_argument("--difficulty", type=int, default=1, help="Curriculum difficulty level (0-4)")
     parser.add_argument("--reward-type", type=str, default="small", help="Reward type (small/standard)")
+    parser.add_argument("--phi", type=float, default=0.8, help="Synergy blending parameter (SARL)")
     parser.add_argument("--num-envs", type=int, default=4, help="Number of parallel training environments")
     parser.add_argument("--seed", type=int, default=0, help="Random seed")
     
@@ -26,12 +27,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=2048, help="Size of the batch for training")
     parser.add_argument("--learning-rate", type=float, default=1e-4, help="Initial learning rate")
     parser.add_argument("--ent-coef", type=float, default=0.0001, help="Entropy coefficient")
+    parser.add_argument("--sde-sample-freq", type=int, default=4, help="SDE sample frequency")
     
     # Feature Toggles
     parser.add_argument("--use-sarl", action="store_true", help="Use Synergy Action Reformulation (SARL)")
     parser.add_argument("--use-hierarchical", action="store_true", help="Use Hierarchical wrapper (Observation Augmentation)")
     parser.add_argument("--use-lattice", action="store_true", help="Use LatticeActorCriticPolicy for exploration")
     parser.add_argument("--use-lstm", action="store_true", help="Use RecurrentPPO (LSTM)")
+    
+    # Model Architecture Specific
+    parser.add_argument("--net-arch-pi", type=int, nargs="+", default=[512, 512], help="Policy network architecture")
+    parser.add_argument("--net-arch-vf", type=int, nargs="+", default=[256, 256], help="Value network architecture")
     
     # SARL Specific
     parser.add_argument("--sar-dir", type=str, default="SAR", help="Directory containing SAR artifacts")

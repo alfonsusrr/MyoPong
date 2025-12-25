@@ -71,7 +71,7 @@ class TableTennisTrainer:
             "ica": joblib.load(os.path.join(self.args.sar_dir, "ica.pkl")),
             "pca": joblib.load(os.path.join(self.args.sar_dir, "pca.pkl")),
             "scaler": joblib.load(os.path.join(self.args.sar_dir, "scaler.pkl")),
-            "phi": 0.8
+            "phi": self.args.phi
         }
         print("SAR artifacts loaded.")
         return artifacts
@@ -169,6 +169,13 @@ class TableTennisTrainer:
         activation_fn = self._get_activation_fn()
         log_std_init = self.args.log_std_init
         
+        # Determine net_arch based on provided arguments
+        if isinstance(self.args.net_arch_pi, list) and isinstance(self.args.net_arch_vf, list):
+            net_arch = dict(pi=self.args.net_arch_pi, vf=self.args.net_arch_vf)
+        else:
+            # Fallback to default if args are not properly formatted (though argparse should handle this)
+            net_arch = dict(pi=[512, 512], vf=[256, 256])
+
         # Determine Algorithm and Policy
         if self.args.use_lstm:
             algo_class = RecurrentPPO
@@ -177,6 +184,7 @@ class TableTennisTrainer:
                 "lstm_hidden_size": self.args.lstm_hidden_size,
                 "n_lstm_layers": self.args.n_lstm_layers,
                 "activation_fn": activation_fn,
+                "net_arch": net_arch
             })
             if log_std_init is not None:
                 policy_kwargs["log_std_init"] = log_std_init
@@ -186,7 +194,7 @@ class TableTennisTrainer:
                 policy_type = LatticeActorCriticPolicy
                 policy_kwargs.update({
                     "use_lattice": True,
-                    "net_arch": dict(pi=[512, 512], vf=[256, 256]),
+                    "net_arch": net_arch,
                     "activation_fn": activation_fn,
                     "ortho_init": True,
                     "std_clip": (self.args.std_clip_min, self.args.std_clip_max),
@@ -198,7 +206,7 @@ class TableTennisTrainer:
             elif self.args.use_hierarchical:
                 policy_type = self.args.policy
                 policy_kwargs.update({
-                    "net_arch": dict(pi=[512, 512], vf=[256, 256]),
+                    "net_arch": net_arch,
                     "activation_fn": activation_fn,
                     "ortho_init": True,
                     "log_std_init": log_std_init if log_std_init is not None else -1.0,
@@ -207,7 +215,7 @@ class TableTennisTrainer:
                 policy_type = self.args.policy
                 policy_kwargs.update({
                     "log_std_init": log_std_init if log_std_init is not None else -2,
-                    "net_arch": [256, 256],
+                    "net_arch": net_arch,
                     "activation_fn": activation_fn,
                 })
 
@@ -238,7 +246,7 @@ class TableTennisTrainer:
                 tensorboard_log=os.path.abspath(self.args.tensorboard_log) if self.args.tensorboard_log else None,
                 device=self.device,
                 use_sde=not self.args.use_lstm,
-                sde_sample_freq=4 if not self.args.use_lstm else -1,
+                sde_sample_freq=self.args.sde_sample_freq if not self.args.use_lstm else -1,
                 policy_kwargs=policy_kwargs,
             )
 
