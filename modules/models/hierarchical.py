@@ -17,6 +17,7 @@ class HierarchicalTableTennisWrapper(gym.Wrapper):
             "alignment_z": 0.5,
             "paddle_quat_goal": 0.5
         }
+
         self._step_count = 0
         # Augment the observation space: 
         # Original features + 3 (pred_ball_pos) + 4 (paddle_ori_ideal) = +7

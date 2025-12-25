@@ -16,7 +16,8 @@ def parse_args() -> argparse.Namespace:
     # Core Environment Arguments
     parser.add_argument("--env-id", type=str, default="myoChallengeTableTennisP1-v0", help="Gymnasium environment ID")
     parser.add_argument("--difficulty", type=int, default=1, help="Curriculum difficulty level (0-4)")
-    parser.add_argument("--num-envs", type=int, default=12, help="Number of parallel training environments")
+    parser.add_argument("--reward-type", type=str, default="small", help="Reward type (small/standard)")
+    parser.add_argument("--num-envs", type=int, default=4, help="Number of parallel training environments")
     parser.add_argument("--seed", type=int, default=0, help="Random seed")
     
     # Training Loop Arguments
@@ -61,7 +62,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint-freq", type=int, default=1000000, help="How many steps between checkpoints")
     parser.add_argument("--score-threshold", type=float, default=0.05, help="Score improvement threshold to save a model checkpoint (0.0 to disable)")
     parser.add_argument("--eval-freq", type=int, default=100000, help="Evaluate policy every N steps")
-    parser.add_argument("--eval-envs", type=int, default=12, help="Number of parallel eval envs")
+    parser.add_argument("--eval-envs", type=int, default=4, help="Number of parallel eval envs")
     parser.add_argument("--eval-episodes", type=int, default=100, help="Total eval episodes per evaluation run")
     parser.add_argument("--render-steps", type=int, default=500000, help="Record video every N steps (0 to disable)")
     parser.add_argument("--rollout-steps", type=int, default=500, help="Steps per saved rollout")

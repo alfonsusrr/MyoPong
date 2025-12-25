@@ -76,8 +76,7 @@ class TableTennisTrainer:
         print("SAR artifacts loaded.")
         return artifacts
 
-    def prepare_env(self, env_id: str, difficulty: int) -> Any:
-        kwargs = tabletennis_curriculum_kwargs(difficulty)
+    def prepare_env(self, env_id: str, kwargs: Dict[str, Any]) -> Any:
         try:
             env = gym.make(env_id, **kwargs)
         except TypeError:
@@ -86,11 +85,23 @@ class TableTennisTrainer:
 
     def make_env(self, seed: int, is_eval: bool = False) -> Callable[[], Monitor]:
         def _init():
-            env = self.prepare_env(self.args.env_id, self.args.difficulty)
+            reward_type = getattr(self.args, "reward_type", "small")
+            kwargs = tabletennis_curriculum_kwargs(self.args.difficulty, reward_type=reward_type)
+
+            # separate alignment rewards from the kwargs
+            alignment_weights = {
+                "alignment_y": kwargs["weighted_reward_keys"]["alignment_y"],
+                "alignment_z": kwargs["weighted_reward_keys"]["alignment_z"],
+                "paddle_quat_goal": kwargs["weighted_reward_keys"]["paddle_quat_goal"]
+            }
+            kwargs["weighted_reward_keys"].pop("alignment_y", None)
+            kwargs["weighted_reward_keys"].pop("alignment_z", None)
+            kwargs["weighted_reward_keys"].pop("paddle_quat_goal", None)
+            env = self.prepare_env(self.args.env_id, kwargs)
             env.seed(seed)
             
             if self.args.use_hierarchical:
-                env = HierarchicalTableTennisWrapper(env, update_freq=self.args.update_freq)
+                env = HierarchicalTableTennisWrapper(env, update_freq=self.args.update_freq, alignment_weights=alignment_weights)
             
             if self.args.use_sarl and self.sar_artifacts:
                 env = SynNoSynWrapper(

@@ -1,7 +1,7 @@
 from typing import Dict, Any
 
 
-def tabletennis_curriculum_kwargs(difficulty: int = 0) -> Dict[str, Any]:
+def tabletennis_curriculum_kwargs(difficulty: int = 0, reward_type: str = "small") -> Dict[str, Any]:
   """
   Returns keyword arguments for MyoSuite table tennis environments
   implementing the shared curriculum levels used by PPO scripts.
@@ -11,34 +11,34 @@ def tabletennis_curriculum_kwargs(difficulty: int = 0) -> Dict[str, Any]:
   # REWARD CONFIGURATIONS
   # -------------------------------------------------------------------------
 
-  # 1. Warmup Rewards (New)
-  # Lowers 'act_reg' (effort penalty) to 0.1.
-  # Essential for early training so the agent doesn't collapse to save energy
-  # before it knows how to hit the ball.
-  warmup_rewards = {
+  # 1. Standard Rewards (Original scale from tabletennis_v0.py)
+  rewards = {
       "reach_dist": 1,
       "palm_dist": 1,
-      "paddle_quat": 2,
-      "act_reg": 0.1,  # <--- SIGNIFICANTLY LOWERED (Default is 0.5)
-    #   "hit_stability": 5.0,
-      "torso_up": 2,
+      "paddle_quat": 0,
+      "act_reg": .5,
+      'torso_up': 2,
+      "alignment_y": 2.0,
+      "alignment_z": 2.0,
+      "paddle_quat_goal": 2.0,
       "sparse": 100,
       "solved": 1000,
-      "done": -10,
+      'done': -10
   }
 
-  # 2. Finetuning Rewards (Original)
-  # Sparse focus for robustness once the agent can hit consistently.
-  finetuning_rewards = {
-      "reach_dist": 0.6,
-      "palm_dist": 0.6,
-      "paddle_quat": 1.5,
-      "act_reg": 0.5,
-    #   "hit_stability": 10.0,
-      "torso_up": 2.0,
-      "sparse": 50,
-      "solved": 1200,
-      "done": -10,
+  # 2. Small Rewards (Current scale from tabletennis_v0.py)
+  small_rewards = {
+      "reach_dist": 0.1,
+      "palm_dist": 0.1,
+      "paddle_quat": 0.0,
+      "alignment_y": 0.5,
+      "alignment_z": 0.5,
+      "paddle_quat_goal": 0.5,
+      "act_reg": 0.1,
+      "torso_up": 0.5,
+      "sparse": 5.0,
+      "solved": 100.0,
+      "done": -5.0,
   }
 
   # -------------------------------------------------------------------------
@@ -144,4 +144,13 @@ def tabletennis_curriculum_kwargs(difficulty: int = 0) -> Dict[str, Any]:
       },
   }
 
-  return curriculum_levels.get(difficulty, {})
+  kwargs = curriculum_levels.get(difficulty, {}).copy()
+
+  # Set reward weights if not already specified in the level
+  if "weighted_reward_keys" not in kwargs:
+    if reward_type == "small":
+      kwargs["weighted_reward_keys"] = small_rewards
+    elif reward_type == "standard":
+      kwargs["weighted_reward_keys"] = rewards
+
+  return kwargs
