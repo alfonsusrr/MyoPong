@@ -17,7 +17,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--env-id", type=str, default="myoChallengeTableTennisP1-v0", help="Gymnasium environment ID")
     parser.add_argument("--difficulty", type=int, default=1, help="Curriculum difficulty level (0-4)")
     parser.add_argument("--reward-type", type=str, default="small", help="Reward type (small/standard)")
-    parser.add_argument("--phi", type=float, default=0.8, help="Synergy blending parameter (SARL)")
     parser.add_argument("--num-envs", type=int, default=4, help="Number of parallel training environments")
     parser.add_argument("--seed", type=int, default=0, help="Random seed")
     
@@ -41,6 +40,7 @@ def parse_args() -> argparse.Namespace:
     
     # SARL Specific
     parser.add_argument("--sar-dir", type=str, default="SAR", help="Directory containing SAR artifacts")
+    parser.add_argument("--phi", type=float, default=0.8, help="Synergy blending parameter (SARL)")
     
     # Hierarchical Specific
     parser.add_argument("--update-freq", type=int, default=10, help="Goal update frequency in Hierarchical wrapper")
