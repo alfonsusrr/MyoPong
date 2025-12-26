@@ -15,7 +15,8 @@ class HierarchicalTableTennisWrapper(gym.Wrapper):
         self._alignment_weights = alignment_weights or {
             "alignment_y": 0.5,
             "alignment_z": 0.5,
-            "paddle_quat_goal": 0.5
+            "paddle_quat_goal": 0.5,
+            "pelvis_alignment": 1.0
         }
 
         self._step_count = 0
@@ -221,15 +222,25 @@ class HierarchicalTableTennisWrapper(gym.Wrapper):
         paddle_quat_err_goal = np.linalg.norm(paddle_ori_err_goal)
         paddle_quat_reward_goal = active_alignment_mask * np.exp(-5.0 * paddle_quat_err_goal)
 
-        # 3. Add to rwd_dict and update scalar reward
+        # 4. Calculate Pelvis alignment reward
+        pelvis_pos = obs_dict["pelvis_pos"]
+        # Maintain distance between paddle and pelvis (x, y)
+        paddle_to_pelvis_offset = pelvis_pos[:2] - paddle_pos[:2]
+        pelvis_target_pos = pred_ball_pos[:2] + paddle_to_pelvis_offset
+        pelvis_err = np.linalg.norm(pelvis_pos[:2] - pelvis_target_pos)
+        pelvis_alignment = active_alignment_mask * np.exp(-5.0 * pelvis_err)
+
+        # 5. Add to rwd_dict and update scalar reward
         info['rwd_dict']["alignment_y"] = alignment_y
         info['rwd_dict']["alignment_z"] = alignment_z
         info['rwd_dict']["paddle_quat_goal"] = paddle_quat_reward_goal
+        info['rwd_dict']["pelvis_alignment"] = pelvis_alignment
         
         additional_reward = (
             alignment_y * self._alignment_weights["alignment_y"] +
             alignment_z * self._alignment_weights["alignment_z"] +
-            paddle_quat_reward_goal * self._alignment_weights["paddle_quat_goal"]
+            paddle_quat_reward_goal * self._alignment_weights["paddle_quat_goal"] +
+            pelvis_alignment * self._alignment_weights.get("pelvis_alignment", 0.0)
         )
         
         return reward + additional_reward, info

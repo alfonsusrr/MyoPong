@@ -21,6 +21,7 @@ def tabletennis_curriculum_kwargs(difficulty: int = 0, reward_type: str = "small
       "alignment_y": 2.0,
       "alignment_z": 2.0,
       "paddle_quat_goal": 2.0,
+      "pelvis_alignment": 0.0,
       "sparse": 100,
       "solved": 1000,
       'done': -10
@@ -34,6 +35,7 @@ def tabletennis_curriculum_kwargs(difficulty: int = 0, reward_type: str = "small
       "alignment_y": 0.5,
       "alignment_z": 0.5,
       "paddle_quat_goal": 0.5,
+      "pelvis_alignment": 0.0,
       "act_reg": 0.1,
       "torso_up": 0.5,
       "sparse": 5.0,
@@ -149,8 +151,15 @@ def tabletennis_curriculum_kwargs(difficulty: int = 0, reward_type: str = "small
   # Set reward weights if not already specified in the level
   if "weighted_reward_keys" not in kwargs:
     if reward_type == "small":
-      kwargs["weighted_reward_keys"] = small_rewards
+      kwargs["weighted_reward_keys"] = small_rewards.copy()
     elif reward_type == "standard":
-      kwargs["weighted_reward_keys"] = rewards
+      kwargs["weighted_reward_keys"] = rewards.copy()
+
+  # Activate pelvis reward for level 2 and above
+  if difficulty >= 2:
+    if reward_type == "small":
+      kwargs["weighted_reward_keys"]["pelvis_alignment"] = 1.0
+    elif reward_type == "standard":
+      kwargs["weighted_reward_keys"]["pelvis_alignment"] = 4.0
 
   return kwargs
