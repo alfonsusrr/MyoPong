@@ -94,12 +94,15 @@ class TableTennisTrainer:
             alignment_weights = {
                 "alignment_y": wk.get("alignment_y", 0.5),
                 "alignment_z": wk.get("alignment_z", 0.5),
-                "paddle_quat_goal": wk.get("paddle_quat_goal", 0.5)
+                "paddle_quat_goal": wk.get("paddle_quat_goal", 0.5),
+                "pelvis_alignment": wk.get("pelvis_alignment", 0.0),
+
             }
             # Remove from kwargs so they don't go to gym.make
             wk.pop("alignment_y", None)
             wk.pop("alignment_z", None)
             wk.pop("paddle_quat_goal", None)
+            wk.pop("pelvis_alignment", None)
             
         return kwargs, alignment_weights
 
