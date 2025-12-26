@@ -55,6 +55,7 @@ class TableTennisTrainer:
         if self.args.use_sarl: prefix += "-sarl"
         if self.args.use_lattice: prefix += "-lattice"
         if self.args.use_lstm: prefix += "-lstm"
+        if getattr(self.args, "init_model_path", None): prefix += "-init"
         
         return f"{prefix}-{time.strftime('%Y%m%d-%H%M%S')}-lvl{self.args.difficulty}"
 
@@ -258,6 +259,26 @@ class TableTennisTrainer:
                 sde_sample_freq=self.args.sde_sample_freq if not self.args.use_lstm else -1,
                 policy_kwargs=policy_kwargs,
             )
+            
+            if getattr(self.args, "init_model_path", None):
+                checkpoint_path = resolve_checkpoint_path(self.args.init_model_path)
+                print(f"Initializing model weights from: {checkpoint_path}")
+                # set_parameters only loads the weights (parameters) and not the training state
+                self.model.set_parameters(checkpoint_path)
+                
+                # Check for VecNormalize statistics near the init model
+                vecnorm_path = Path(checkpoint_path).parent.parent / "vecnormalize.pkl"
+                if vecnorm_path.exists():
+                    print(f"Detected VecNormalize statistics at {vecnorm_path}. "
+                          "Loading them to ensure weight compatibility.")
+                    # We load it but keep training=True to continue adapting to new environment
+                    temp_vec_env = VecNormalize.load(str(vecnorm_path), self.vec_env.venv)
+                    self.vec_env.obs_rms = temp_vec_env.obs_rms
+                    # If we also normalized rewards, we might want to load that too, 
+                    # but usually for a fresh start we want to restart reward normalization.
+                    if self.args.norm_reward:
+                        self.vec_env.ret_rms = temp_vec_env.ret_rms
+                    self.eval_vec_env.obs_rms = self.vec_env.obs_rms
 
     def setup_callbacks(self):
         checkpoint_save_freq = max(1, self.args.checkpoint_freq // self.args.num_envs)

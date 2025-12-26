@@ -79,6 +79,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--log-std-init", type=float, default=-0.5, help="Initial log standard deviation")
     parser.add_argument("--save-path", type=str, default=None, help="Path to save the final model")
     parser.add_argument("--resume-from-checkpoint", type=str, default=None, help="Path to a checkpoint to resume from")
+    parser.add_argument("--init-model-path", type=str, default=None, help="Path to a checkpoint to initialize model weights from (restarts training state)")
 
     return parser.parse_args()
 
