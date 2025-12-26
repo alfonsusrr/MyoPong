@@ -83,20 +83,28 @@ class TableTennisTrainer:
             env = gym.make(env_id)
         return env
 
+    def _get_env_kwargs(self, difficulty: int):
+        reward_type = getattr(self.args, "reward_type", "small")
+        kwargs = tabletennis_curriculum_kwargs(difficulty, reward_type=reward_type)
+        
+        alignment_weights = None
+        if "weighted_reward_keys" in kwargs:
+            wk = kwargs["weighted_reward_keys"]
+            alignment_weights = {
+                "alignment_y": wk.get("alignment_y", 0.5),
+                "alignment_z": wk.get("alignment_z", 0.5),
+                "paddle_quat_goal": wk.get("paddle_quat_goal", 0.5)
+            }
+            # Remove from kwargs so they don't go to gym.make
+            wk.pop("alignment_y", None)
+            wk.pop("alignment_z", None)
+            wk.pop("paddle_quat_goal", None)
+            
+        return kwargs, alignment_weights
+
     def make_env(self, seed: int, is_eval: bool = False) -> Callable[[], Monitor]:
         def _init():
-            reward_type = getattr(self.args, "reward_type", "small")
-            kwargs = tabletennis_curriculum_kwargs(self.args.difficulty, reward_type=reward_type)
-
-            # separate alignment rewards from the kwargs
-            alignment_weights = {
-                "alignment_y": kwargs["weighted_reward_keys"]["alignment_y"],
-                "alignment_z": kwargs["weighted_reward_keys"]["alignment_z"],
-                "paddle_quat_goal": kwargs["weighted_reward_keys"]["paddle_quat_goal"]
-            }
-            kwargs["weighted_reward_keys"].pop("alignment_y", None)
-            kwargs["weighted_reward_keys"].pop("alignment_z", None)
-            kwargs["weighted_reward_keys"].pop("paddle_quat_goal", None)
+            kwargs, alignment_weights = self._get_env_kwargs(self.args.difficulty)
             env = self.prepare_env(self.args.env_id, kwargs)
             env.seed(seed)
             
@@ -144,9 +152,10 @@ class TableTennisTrainer:
         self.eval_vec_env.obs_rms = self.vec_env.obs_rms
 
         # Metrics Env
-        self.metrics_env = self.prepare_env(self.args.env_id, self.args.difficulty)
+        kwargs, alignment_weights = self._get_env_kwargs(self.args.difficulty)
+        self.metrics_env = self.prepare_env(self.args.env_id, kwargs)
         if self.args.use_hierarchical:
-            self.metrics_env = HierarchicalTableTennisWrapper(self.metrics_env, update_freq=self.args.update_freq)
+            self.metrics_env = HierarchicalTableTennisWrapper(self.metrics_env, update_freq=self.args.update_freq, alignment_weights=alignment_weights)
         self.metrics_env = self.metrics_env.unwrapped
 
     def _get_activation_fn(self) -> Any:
@@ -293,8 +302,9 @@ class TableTennisTrainer:
 
         if self.args.render_steps > 0:
             def _wrap_env_for_rendering(env):
+                _, alignment_weights = self._get_env_kwargs(self.args.difficulty)
                 if self.args.use_hierarchical:
-                    env = HierarchicalTableTennisWrapper(env, update_freq=self.args.update_freq)
+                    env = HierarchicalTableTennisWrapper(env, update_freq=self.args.update_freq, alignment_weights=alignment_weights)
                 if self.args.use_sarl and self.sar_artifacts:
                     env = SynNoSynWrapper(
                         env, 
@@ -305,6 +315,10 @@ class TableTennisTrainer:
                     )
                 return Monitor(env, filename=os.path.join(self.log_dir, "renderer_monitor.csv"))
 
+            def _make_render_env():
+                kwargs, _ = self._get_env_kwargs(self.args.difficulty)
+                return self.prepare_env(self.args.env_id, kwargs)
+
             self.callbacks.append(PeriodicVideoRecorder(
                 video_dir=self.video_dir,
                 env_id=self.args.env_id,
@@ -312,7 +326,7 @@ class TableTennisTrainer:
                 rollout_steps=self.args.rollout_steps,
                 wrap_env_fn=_wrap_env_for_rendering,
                 verbose=1,
-                make_env_fn=lambda: self.prepare_env(self.args.env_id, self.args.difficulty)
+                make_env_fn=_make_render_env
             ))
 
     def train(self):
