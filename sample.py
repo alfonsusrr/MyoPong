@@ -248,7 +248,7 @@ def parse_args() -> argparse.Namespace:
       "--render-camera-ids",
       type=int,
       nargs="+",
-      default=[1, 2],
+      default=[1, 2, 3],
       help="Camera ids to query from the renderer (can pass multiple values)",
   )
   parser.add_argument("--fps", type=int, default=30, help="Video frames per second")
