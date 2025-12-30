@@ -1,0 +1,28 @@
+==============================
+EVALUATION METRICS (Physics Heuristic)
+==============================
+Difficulty: 1
+Total Episodes:   400
+Average Reward:   115.12 +/- 1.18
+Success Rate:     100.00% +/- 0.00%
+Paddle Hit Rate:  100.00% +/- 0.00%
+
+==============================
+EVALUATION METRICS (Physics Heuristic)
+==============================
+Difficulty: 2
+Total Episodes:   400
+Average Reward:   112.16 +/- 15.82
+Success Rate:     97.50% +/- 0.78%
+Paddle Hit Rate:  100.00% +/- 0.00%
+==============================
+
+==============================
+EVALUATION METRICS (Physics Heuristic)
+==============================
+Difficulty: 3
+Total Episodes:   400
+Average Reward:   109.24 +/- 23.41
+Success Rate:     91.50% +/- 1.39%
+Paddle Hit Rate:  100.00% +/- 0.00%
+==============================

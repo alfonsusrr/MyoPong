@@ -1,19 +1,21 @@
 import time
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
 import numpy as np
 import wandb
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.vec_env import VecMonitor
 
 
-def evaluate_policy(model: Any, eval_vec: VecMonitor, episodes: int, metrics_env: Optional[Any] = None) -> Dict[str, float]:
-  """Run evaluation on an existing vectorized env and return averaged metrics.
+def evaluate_policy(model: Any, eval_vec: VecMonitor, episodes: int, metrics_env: Optional[Any] = None) -> Tuple[Dict[str, float], List[Dict[str, float]]]:
+  """Run evaluation on an existing vectorized env and return averaged metrics and per-episode metrics.
 
   Accumulates step-wise reward dictionaries from infos into per-episode `paths`:
     path = { 'env_infos': { 'rwd_dict': { key: np.array([...]) } } }
 
-  Returns a dict of averaged metrics across all completed episodes. The provided
-  `eval_vec` is reset at the start and reused across calls for performance.
+  Returns a tuple (avg_metrics, episode_metrics).
+  - avg_metrics: A dict of averaged metrics across all completed episodes.
+  - episode_metrics: A list of dicts, one for each episode, containing its metrics.
+  The provided `eval_vec` is reset at the start and reused across calls for performance.
   """
   # Per-env accumulators of rwd_dict over time
   rwd_accum: List[List[Dict[str, Any]]] = [[] for _ in range(eval_vec.num_envs)]
@@ -71,6 +73,7 @@ def evaluate_policy(model: Any, eval_vec: VecMonitor, episodes: int, metrics_env
           break
 
   avg_metrics: Dict[str, float] = {}
+  episode_metrics: List[Dict[str, float]] = []
 
   # Use the provided metrics_env
   try:
@@ -79,10 +82,18 @@ def evaluate_policy(model: Any, eval_vec: VecMonitor, episodes: int, metrics_env
       if isinstance(avg, dict):
         avg_metrics = {k: float(v) for k, v in avg.items()
                        if isinstance(v, (int, float, np.floating))}
+      
+      # Calculate per-episode metrics for variance/std calculation
+      for path in all_paths:
+        ep_res = metrics_env.get_metrics([path])
+        if isinstance(ep_res, dict):
+          ep_metrics = {k: float(v) for k, v in ep_res.items()
+                        if isinstance(v, (int, float, np.floating))}
+          episode_metrics.append(ep_metrics)
   except Exception:
     pass
 
-  return avg_metrics
+  return avg_metrics, episode_metrics
 
 
 class PeriodicEvaluator(BaseCallback):
@@ -96,6 +107,7 @@ class PeriodicEvaluator(BaseCallback):
     self.metrics_env = metrics_env
     self._last_eval_step = 0
     self.last_metrics = None
+    self.last_episode_metrics = None
 
   def _on_step(self) -> bool:
     # Align last eval step on resume to prevent immediate long evaluations.
@@ -105,13 +117,14 @@ class PeriodicEvaluator(BaseCallback):
       self._last_eval_step = self.num_timesteps
       try:
         t0 = time.time()
-        metrics = evaluate_policy(
+        metrics, ep_metrics = evaluate_policy(
             model=self.model,
             eval_vec=self.eval_vec,
             episodes=self.eval_episodes,
             metrics_env=self.metrics_env
         )
         self.last_metrics = metrics
+        self.last_episode_metrics = ep_metrics
         duration_s = time.time() - t0
         if metrics:
           # Log to W&B with eval/ prefix

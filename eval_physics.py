@@ -100,7 +100,7 @@ def heuristic_policy(obs_vec, ctrl_min, ctrl_max, last_actions, frozen_actions):
 def main():
     parser = argparse.ArgumentParser(description="Evaluate Physics Heuristic Policy")
     parser.add_argument("--env-id", type=str, default="myoChallengePongP0-v0", help="Environment ID")
-    parser.add_argument("--num-episodes", type=int, default=100, help="Total number of episodes")
+    parser.add_argument("--num-episodes", type=int, default=400, help="Total number of episodes")
     parser.add_argument("--num-envs", type=int, default=12, help="Number of parallel environments")
     parser.add_argument("--difficulty", type=int, default=5, help="Curriculum difficulty (0-4)")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
@@ -208,9 +208,9 @@ def main():
     avg_reward = np.mean(all_rewards)
     std_reward = np.std(all_rewards)
     success_rate = np.mean(all_successes) * 100
-    std_success = np.std(all_successes) * 100
+    std_success = np.std(all_successes) * 100 / np.sqrt(len(all_successes))
     hit_paddle_rate = np.mean(all_hit_paddles) * 100
-    std_hit_paddle = np.std(all_hit_paddles) * 100
+    std_hit_paddle = np.std(all_hit_paddles) * 100 / np.sqrt(len(all_hit_paddles))
 
     print("\n" + "="*30)
     print("EVALUATION METRICS (Physics Heuristic)")

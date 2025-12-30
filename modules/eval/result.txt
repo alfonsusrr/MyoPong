@@ -1,0 +1,71 @@
+========================================
+           EVALUATION RESULTS           
+========================================
+Model: /home/alfonsusrr/workspace/MyoPong/checkpoints/run-ppo-h-20251225-155617-lvl1/ppo_model_20000000_steps.zip
+Duration: 106.77s
+Difficulty: 1
+Episodes: 400
+----------------------------------------
+score          :   0.0000 +/-   0.0000
+effort         :   0.0371 +/-   0.0001
+========================================
+
+========================================
+           EVALUATION RESULTS           
+========================================
+Model: /home/alfonsusrr/workspace/MyoPong/checkpoints/run-ppo-h-sarl-20251226-001055-lvl1/ppo_model_score_0.93_18000000_steps.zip
+Duration: 70.11s
+Difficulty: 1
+Episodes: 400
+----------------------------------------
+score          :   0.9400 +/-   0.0119
+effort         :   0.0366 +/-   0.0000
+========================================
+
+========================================
+           EVALUATION RESULTS           
+========================================
+Model: /home/alfonsusrr/workspace/MyoPong/checkpoints/run-ppo-h-lattice-20251225-155620-lvl1/ppo_model_score_0.9600_16800032_steps.zip
+Duration: 100.63s
+Difficulty: 1
+Episodes: 400
+----------------------------------------
+score          :   0.9400 +/-   0.0119
+effort         :   0.0215 +/-   0.0000
+========================================
+
+========================================
+           EVALUATION RESULTS           
+========================================
+Model: /home/alfonsusrr/workspace/MyoPong/checkpoints/run-ppo-lattice-20251225-155626-lvl1/ppo_model_score_0.6400_12000032_steps.zip
+Duration: 105.81s
+Difficulty: 1
+Episodes: 400
+----------------------------------------
+score          :   0.5675 +/-   0.0248
+effort         :   0.0268 +/-   0.0000
+========================================
+
+========================================
+           EVALUATION RESULTS           
+========================================
+Model: /home/alfonsusrr/workspace/MyoPong/checkpoints/run-ppo-20251225-155635-lvl1/ppo_model_20000000_steps.zip
+Duration: 103.81s
+Difficulty: 1
+Episodes: 400
+----------------------------------------
+score          :   0.0000 +/-   0.0000
+effort         :   0.0366 +/-   0.0000
+========================================
+
+========================================
+           EVALUATION RESULTS           
+========================================
+Model: /home/alfonsusrr/workspace/MyoPong/checkpoints/run-ppo-h-lattice-20251226-212632-lvl2/ppo_model_score_0.0800_29100032_steps.zip
+Duration: 134.49s
+Difficulty: 2
+Episodes: 400
+----------------------------------------
+score          :   0.0250 +/-   0.0078
+effort         :   0.0303 +/-   0.0000
+========================================

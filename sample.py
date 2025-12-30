@@ -1,15 +1,33 @@
+import os
+# CRITICAL: Must be set before any MuJoCo or MyoSuite imports
+os.environ["MUJOCO_GL"] = "egl"
+
+import warnings
+warnings.filterwarnings("ignore")
+
 from myosuite.utils import gym
 from stable_baselines3 import PPO
+from sb3_contrib import RecurrentPPO
 import numpy as np
 import imageio
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, Optional, Tuple
 from pathlib import Path
 import time
 import subprocess
 import shutil
 import argparse
-import os
-os.environ.setdefault("MUJOCO_GL", "egl")
+import joblib
+import torch
+from stable_baselines3.common.vec_env import VecNormalize
+from stable_baselines3.common.monitor import Monitor
+
+# Internal imports
+from SAR.SynergyWrapper import SynNoSynWrapper
+from modules.models.hierarchical import HierarchicalTableTennisWrapper
+from modules.models.lattice import LatticeActorCriticPolicy
+from modules.envs.curriculum import tabletennis_curriculum_kwargs
+
+from modules.callback.checkpoint import resolve_checkpoint_path
 
 
 def _write_with_ffmpeg(frames: Iterable[np.ndarray], path: str, fps: int) -> bool:
@@ -62,143 +80,156 @@ def _write_with_ffmpeg(frames: Iterable[np.ndarray], path: str, fps: int) -> boo
     return False
 
 
-def resolve_checkpoint_path(checkpoint_target: str) -> Path:
-  target = Path(checkpoint_target).expanduser()
-  if target.is_dir():
-    checkpoints = sorted(target.glob("*.zip"))
-    if not checkpoints:
-      raise FileNotFoundError(f"No checkpoint archives found in {target}")
-    return checkpoints[-1].resolve()
+def get_env_kwargs(args: argparse.Namespace) -> Tuple[Dict[str, Any], Optional[Dict[str, float]]]:
+  kwargs = tabletennis_curriculum_kwargs(args.difficulty, reward_type=args.reward_type)
 
-  if target.is_file():
-    return target.resolve()
+  alignment_weights = None
+  if "weighted_reward_keys" in kwargs:
+    wk = kwargs["weighted_reward_keys"]
+    alignment_weights = {
+        "alignment_y": wk.get("alignment_y", 0.5),
+        "alignment_z": wk.get("alignment_z", 0.5),
+        "paddle_quat_goal": wk.get("paddle_quat_goal", 0.5),
+        "pelvis_alignment": wk.get("pelvis_alignment", 0.0),
+    }
+    wk.pop("alignment_y", None)
+    wk.pop("alignment_z", None)
+    wk.pop("paddle_quat_goal", None)
+    wk.pop("pelvis_alignment", None)
 
-  if target.suffix != ".zip":
-    zipped_candidate = target.with_suffix(".zip")
-    if zipped_candidate.is_file():
-      return zipped_candidate.resolve()
-
-  raise FileNotFoundError(f"Checkpoint path {checkpoint_target} does not exist")
+  return kwargs, alignment_weights
 
 
-def prepare_env(env_id: str, render_mode: Optional[str]) -> Any:
-  """Builds the table tennis env with tuning knobs exposed in TableTennisEnvV0.
-
-  The kwargs align with the configuration in `lib/myosuite/envs/myo/myochallenge/tabletennis_v0.py`:
-    * `ball_xyz_range`: dict with `low`/`high` samples the ball starting position.
-    * `ball_qvel`: bool that enables physics-based velocity sampling to land the ball
-      on the agent's side. Requires `ball_xyz_range` to be set as well.
-    * `paddle_mass_range`: tuple `(low, high)` for randomized paddle mass dynamics.
-    * `frame_skip`: how many physics steps each action persists (default 10 in the env).
-    * `rally_count`: number of successful solves before the episode is forced done.
-    * `qpos_noise_range`: optional `(low, high)` noise applied to non-ball/paddle joints.
-    * `ball_friction_range`: optional dict sets random friction coefficients for the ball geo.
-    * `weighted_reward_keys`: map to scale the default reward terms (`reach_dist`,
-      `palm_dist`, `paddle_quat`, `act_reg`, `sparse`, `solved`, `done`, etc.).
-  """
-  # kwargs = {
-  #   "ball_xyz_range": {"low": [0.45, -0.35, 1.32], "high": [0.65, 0.35, 1.38]},
-  #   "ball_qvel": True,
-  #   "paddle_mass_range": (0.6, 1.1),
-  #   # "frame_skip": 8,
-  #   # "rally_count": 2,
-  #   "qpos_noise_range": {"low": 0, "high": 0},
-  #   "ball_friction_range": {"low": 0.3, "high": 0.3},
-  #   "weighted_reward_keys": {
-  #     "reach_dist": 0.6,
-  #     "palm_dist": 0.6,
-  #     "paddle_quat": 1.5,
-  #     "act_reg": 0.5,
-  #     "sparse": 50,
-  #     "solved": 1200,
-  #     "done": -10,
-  #   },
-  # }
-
-  kwargs = {
-      # "ball_xyz_range": {"low": [-1, -0.2, 1.32], "high": [-1, 0.2, 1.40]},
-      # "ball_qvel": True,
-      # "frame_skip": 8,
-      # "paddle_mass_range": (0.60, 0.60),
+def load_sar_artifacts(sar_dir: str, phi: float) -> Dict[str, Any]:
+  print(f"Loading SAR artifacts from {sar_dir}...")
+  artifacts = {
+      "ica": joblib.load(os.path.join(sar_dir, "ica.pkl")),
+      "pca": joblib.load(os.path.join(sar_dir, "pca.pkl")),
+      "scaler": joblib.load(os.path.join(sar_dir, "scaler.pkl")),
+      "phi": phi
   }
+  return artifacts
 
-  if render_mode:
-    kwargs["render_mode"] = render_mode
+
+def prepare_env(args: argparse.Namespace, sar_artifacts: Optional[Dict] = None) -> Any:
+  """Builds the table tennis env with tuning knobs and wrappers matching evaluator.py."""
+  kwargs, alignment_weights = get_env_kwargs(args)
+  if args.render_mode:
+    kwargs["render_mode"] = args.render_mode
+
   try:
-    env = gym.make(env_id, **kwargs)
+    env = gym.make(args.env_id, **kwargs)
   except TypeError:
-    env = gym.make(env_id)
-  return env
+    env = gym.make(args.env_id)
+
+  # Apply wrappers in the same order as evaluator.py
+  if args.use_hierarchical:
+    env = HierarchicalTableTennisWrapper(
+        env, update_freq=args.update_freq, alignment_weights=alignment_weights)
+
+  if args.use_sarl and sar_artifacts:
+    env = SynNoSynWrapper(
+        env,
+        sar_artifacts["ica"],
+        sar_artifacts["pca"],
+        sar_artifacts["scaler"],
+        sar_artifacts["phi"]
+    )
+
+  return Monitor(env)
 
 
-def obs_to_vector(env: Any, obs: Any, model: PPO) -> Any:
-  if isinstance(obs, dict):
-    if hasattr(env.unwrapped, "obsdict2obsvec"):
-      _, obs_vec = env.unwrapped.obsdict2obsvec(
-          env.unwrapped.obs_dict, env.unwrapped.obs_keys)
-      return obs_vec
-    return model.policy.obs_to_tensor(obs)[0].cpu().numpy()
-  return obs
+from stable_baselines3.common.vec_env import VecEnv, VecNormalize, DummyVecEnv
 
 
-def capture_frame(env: Any, width: int, height: int, camera_id: Optional[int]) -> Optional[np.ndarray]:
+def capture_frame(sim: Any, width: int, height: int, camera_id: int) -> Optional[np.ndarray]:
+  """Captures a frame using the provided simulation object."""
   try:
-    sim = getattr(env.unwrapped, "sim", None)
-    if sim is not None and hasattr(sim, "renderer") and hasattr(sim.renderer, "render_offscreen"):
-      return sim.renderer.render_offscreen(width=width, height=height, camera_id=camera_id or 0).astype(np.uint8)
-  except Exception:
-    pass
-
-  if os.environ.get("DISPLAY") is None:
-    # If we are headless, avoid invoking GLFW-backed renderers.
-    return None
-
-  try:
-    frame = env.render()
+    return sim.renderer.render_offscreen(
+        width=width, height=height, camera_id=camera_id
+    ).astype(np.uint8)
   except Exception:
     return None
-  if frame is None:
-    return None
-  return np.asarray(frame, dtype=np.uint8)
 
 
-def rollout(env: Any, model: PPO, max_steps: int, deterministic: bool, render_opts: Dict[str, Any]) -> Dict[int, list[np.ndarray]]:
+def rollout(env: Any, model: Any, max_steps: int, deterministic: bool, render_opts: Dict[str, Any]) -> Dict[int, list[np.ndarray]]:
   camera_ids = render_opts["camera_ids"]
+  render_every = render_opts.get("render_every", 1)
   frames: Dict[int, list[np.ndarray]] = {cam_id: [] for cam_id in camera_ids}
+
+  is_vectorized = isinstance(env, VecNormalize) or isinstance(env, VecEnv)
+
+  # Optimization: Extract the underlying sim object ONCE per rollout
+  curr_env = env
+  while hasattr(curr_env, "venv"):
+    curr_env = curr_env.venv
+  if hasattr(curr_env, "envs"):
+    curr_env = curr_env.envs[0]
+  sim = getattr(curr_env.unwrapped, "sim", None)
+
+  # Ensure renderer is initialized and optimized
+  if sim is not None:
+    try:
+      # Pre-run forward to initialize scene
+      sim.forward()
+      # Disable expensive visual features for speed
+      sim.model.vis.global_.shadowsize = 0
+      sim.model.vis.global_.offsamples = 0
+    except Exception:
+      pass
+
   observation = env.reset()
-  if isinstance(observation, tuple):
-    obs, _ = observation
-  else:
-    obs = observation
-  done = False
-  truncated = False
+  obs = observation if is_vectorized else (observation[0] if isinstance(observation, tuple) else observation)
+
+  # Support for Recurrent policies
+  states = None
+  num_envs = env.num_envs if is_vectorized else 1
+  episode_start = np.ones((num_envs,), dtype=bool)
+
   steps = 0
-  while not done and not truncated and steps < max_steps:
-    obs_vec = obs_to_vector(env, obs, model)
-    action, _ = model.predict(obs_vec, deterministic=deterministic)
-    step = env.step(action)
-    if len(step) == 5:
-      obs, _, done, truncated, _ = step
+  while steps < max_steps:
+    action, states = model.predict(
+        obs,
+        state=states,
+        episode_start=episode_start,
+        deterministic=deterministic
+    )
+    episode_start.fill(False)
+
+    if is_vectorized:
+      obs, rewards, dones, infos = env.step(action)
+      done = dones[0]
+      truncated = infos[0].get("TimeLimit.truncated", False)
     else:
-      obs, _, done, _ = step
-      truncated = False
-    for cam_id in camera_ids:
-      frame = capture_frame(
-          env, width=render_opts["width"], height=render_opts["height"], camera_id=cam_id)
-      if frame is not None:
-        frames[cam_id].append(frame)
+      step = env.step(action)
+      if len(step) == 5:
+        obs, _, done, truncated, _ = step
+      else:
+        obs, _, done, _ = step
+        truncated = False
+
+    # Capture frames
+    if steps % render_every == 0 and sim is not None:
+      for cam_id in camera_ids:
+        frame = capture_frame(sim, render_opts["width"], render_opts["height"], cam_id)
+        if frame is not None:
+          frames[cam_id].append(frame)
+
     steps += 1
-  env.close()
+    if done or truncated:
+      episode_start.fill(True)
+      break
+
   return frames
 
 
 def parse_args() -> argparse.Namespace:
   parser = argparse.ArgumentParser(
-      description="Sample PPO checkpoint rollouts and save videos")
+      description="Sample PPO/RecurrentPPO checkpoint rollouts and save videos")
   parser.add_argument("--env-id", type=str,
                       default="myoChallengeTableTennisP1-v0", help="Environment ID to render")
   parser.add_argument("--checkpoint", type=str, required=True,
-                      help="Path to PPO checkpoint zip file or directory")
+                      help="Path to PPO/RecurrentPPO checkpoint zip file or directory")
   parser.add_argument("--output-dir", type=str, default="sample_videos",
                       help="Directory where MP4 files will be written")
   parser.add_argument("--episodes", type=int, default=1,
@@ -207,7 +238,7 @@ def parse_args() -> argparse.Namespace:
                       help="Maximum steps per rollout")
   parser.add_argument("--deterministic", action="store_true",
                       help="Use deterministic policy actions")
-  parser.add_argument("--render-mode", type=str, default=None,
+  parser.add_argument("--render-mode", type=str, default="rgb_array",
                       help="Optional gym render_mode parameter")
   parser.add_argument("--render-width", type=int, default=640,
                       help="Rendered frame width")
@@ -221,34 +252,119 @@ def parse_args() -> argparse.Namespace:
       help="Camera ids to query from the renderer (can pass multiple values)",
   )
   parser.add_argument("--fps", type=int, default=30, help="Video frames per second")
+  parser.add_argument("--render-every", type=int, default=1,
+                      help="Render a frame every N steps (e.g., 2 for 25fps if env is 50hz)")
+
+  # Evaluation Arguments (from evaluator.py)
+  parser.add_argument("--difficulty", type=int, default=1,
+                      help="Curriculum difficulty level (0-5)")
+  parser.add_argument("--reward-type", type=str,
+                      default="standard", help="Reward type (small/standard)")
+  parser.add_argument("--seed", type=int, default=42, help="Random seed")
+
+  # Feature Toggles (must match how the model was trained)
+  parser.add_argument("--use-sarl", action="store_true",
+                      help="Use Synergy Action Reformulation (SARL)")
+  parser.add_argument("--use-hierarchical", action="store_true",
+                      help="Use Hierarchical wrapper")
+  parser.add_argument("--use-lattice", action="store_true",
+                      help="Use LatticeActorCriticPolicy")
+  parser.add_argument("--use-lstm", action="store_true",
+                      help="Use RecurrentPPO (LSTM)")
+
+  # SARL Specific
+  parser.add_argument("--sar-dir", type=str, default="SAR",
+                      help="Directory containing SAR artifacts")
+  parser.add_argument("--phi", type=float, default=0.8,
+                      help="Synergy blending parameter (SARL)")
+
+  # Hierarchical Specific
+  parser.add_argument("--update-freq", type=int, default=10,
+                      help="Goal update frequency in Hierarchical wrapper")
+
+  # Normalization Arguments
+  parser.add_argument("--norm-obs", action="store_true",
+                      default=True, help="Normalize observations (usually True)")
+  parser.add_argument("--clip-obs", type=float, default=10.0,
+                      help="Clipping value for observations")
+
   return parser.parse_args()
 
 
 def main() -> None:
   args = parse_args()
+
+  # Validation logic
+  if args.use_lstm and args.use_lattice:
+    raise ValueError(
+        "LatticeActorCriticPolicy is not compatible with RecurrentPPO (LSTM).")
+
+  device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+  print(f"Using device: {device}")
+
   checkpoint_path = resolve_checkpoint_path(args.checkpoint)
+  checkpoint_stem = Path(checkpoint_path).stem
   os.makedirs(args.output_dir, exist_ok=True)
-  env = prepare_env(args.env_id, args.render_mode)
-  model = PPO.load(str(checkpoint_path), env=env)
+
+  sar_artifacts = load_sar_artifacts(
+      args.sar_dir, args.phi) if args.use_sarl else None
+
+  # Prepare base env for model loading/initialization
+  def make_env_fn():
+    return prepare_env(args, sar_artifacts)
+
+  env = DummyVecEnv([make_env_fn])
+
+  # Handle VecNormalize
+  model_path_obj = Path(checkpoint_path)
+  vecnorm_path = model_path_obj.parent / "vecnormalize.pkl"
+  if not vecnorm_path.exists():
+    vecnorm_path = model_path_obj.parent.parent / "vecnormalize.pkl"
+
+  if args.norm_obs:
+    if vecnorm_path.exists():
+      print(f"Loading VecNormalize statistics from {vecnorm_path}")
+      env = VecNormalize.load(str(vecnorm_path), env)
+      env.training = False
+      env.norm_reward = False
+    else:
+      print(
+          f"Warning: --norm-obs is True but {vecnorm_path} not found. Evaluation might be inaccurate.")
+
+  # Load Model
+  print(f"Loading model from {checkpoint_path}...")
+  algo_class = RecurrentPPO if args.use_lstm else PPO
+
+  custom_objects = {}
+  if args.use_lattice:
+    custom_objects["policy_class"] = LatticeActorCriticPolicy
+
+  model = algo_class.load(str(checkpoint_path), env=env,
+                          device=device, custom_objects=custom_objects)
 
   render_opts = {
       "width": args.render_width,
       "height": args.render_height,
       "camera_ids": args.render_camera_ids,
+      "render_every": args.render_every,
   }
 
   for episode in range(1, args.episodes + 1):
-    env = prepare_env(args.env_id, args.render_mode)
-    model.set_env(env)
-    frames_by_cam = rollout(env, model, args.max_steps, args.deterministic, render_opts)
+    print(f"Rolling out episode {episode}...")
+    # We reuse the same env if possible, or reset it.
+    # rollout handles env.reset()
+    frames_by_cam = rollout(
+        env, model, args.max_steps, args.deterministic, render_opts)
+
     if not any(frames_by_cam.values()):
       print(f"Episode {episode} produced no frames; skipping.")
       continue
+
     timestamp = int(time.time())
     for cam_id, frames in frames_by_cam.items():
       if not frames:
         continue
-      video_name = f"sample_{checkpoint_path.stem}_cam{cam_id}_ep{episode}_{timestamp}.mp4"
+      video_name = f"sample_{checkpoint_stem}_cam{cam_id}_ep{episode}_{timestamp}.mp4"
       video_path = os.path.join(args.output_dir, video_name)
       try:
         imageio.mimwrite(video_path, frames, fps=args.fps, macro_block_size=None)
@@ -259,6 +375,8 @@ def main() -> None:
           continue
         raise
       print(f"Wrote episode {episode} cam{cam_id} to {video_path}")
+
+  env.close()
 
 
 if __name__ == "__main__":
