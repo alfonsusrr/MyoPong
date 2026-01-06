@@ -49,7 +49,7 @@ def create_gif_from_folder(folder_path, output_gif_path, scale=0.5, target_fps=1
             print(f"  Error writing GIF: {e}")
 
 def main():
-    root_dir = Path("/home/alfonsusrr/workspace/MyoPong/selected_samples")
+    root_dir = Path("/home/alfonsusrr/workspace/MyoPong/samples")
     subdirs = sorted([d for d in root_dir.iterdir() if d.is_dir()])
     
     for subdir in subdirs:

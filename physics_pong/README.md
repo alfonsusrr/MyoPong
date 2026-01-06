@@ -1,5 +1,8 @@
 # Physics Pong Environment
 
+![Combined Demo](../samples/pong_samples/combined_samples.gif)
+
+
 This directory contains tools for working with the simplified 6-DoF Pong environment (`myoChallengePongP0-v0`), which uses a simplified physics model compared to the full table tennis environment.
 
 ## Setup
