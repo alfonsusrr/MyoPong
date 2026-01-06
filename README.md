@@ -1,6 +1,10 @@
 # MyoPong: Goal-Conditioned Synergistic Action and Latent Exploration for Musculoskeletal Table Tennis Control with Training-Free High-Level Policy
 
+[![Documentation](https://img.shields.io/badge/docs-myopong.github.io-blue?logo=readthedocs&style=flat)](https://myopong.github.io)
+
 MyoPong is a framework designed to tackle the MyoChallenge Table-Tennis task using a musculoskeletal model with up to 210 muscles. It combines a training-free, physics-based high-level planner with a low-level PPO actor integrated with muscle synergy extraction and latent exploration. This hierarchical architecture achieves a near-optimal 94% success rate, demonstrating the effectiveness of combining hierarchical structures with inductive biases in mastering musculoskeletal control.
+
+> **See more details at [myopong.github.io](https://myopong.github.io)**
 
 ![Combined Demo](samples/selected_samples/combined_samples.gif)
 
