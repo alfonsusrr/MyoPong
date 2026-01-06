@@ -265,7 +265,7 @@ MyoPong/
 ├── visualization/         # Visualization tools
 ├── checkpoints/           # Saved model checkpoints
 ├── runs/                  # Training logs and outputs
-├── images/                # Demo videos and images
+├── samples/                # Demo videos and images
 ├── environment.yml        # Conda environment file
 ├── pyproject.toml         # UV/Python project configuration
 ├── requirements.txt       # Python dependencies
