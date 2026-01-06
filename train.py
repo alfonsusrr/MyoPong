@@ -39,7 +39,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--net-arch-vf", type=int, nargs="+", default=[256, 256], help="Value network architecture")
     
     # SARL Specific
-    parser.add_argument("--sar-dir", type=str, default="SAR", help="Directory containing SAR artifacts")
+    parser.add_argument("--sar-dir", type=str, default="SAR/data", help="Directory containing SAR artifacts")
     parser.add_argument("--phi", type=float, default=0.8, help="Synergy blending parameter (SARL)")
     
     # Hierarchical Specific

@@ -273,7 +273,7 @@ def parse_args() -> argparse.Namespace:
                       help="Use RecurrentPPO (LSTM)")
 
   # SARL Specific
-  parser.add_argument("--sar-dir", type=str, default="SAR",
+  parser.add_argument("--sar-dir", type=str, default="SAR/data",
                       help="Directory containing SAR artifacts")
   parser.add_argument("--phi", type=float, default=0.8,
                       help="Synergy blending parameter (SARL)")
