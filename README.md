@@ -2,7 +2,7 @@
 
 MyoPong is a framework designed to tackle the MyoChallenge Table-Tennis task using a musculoskeletal model with up to 210 muscles. It combines a training-free, physics-based high-level planner with a low-level PPO actor integrated with muscle synergy extraction and latent exploration. This hierarchical architecture achieves a near-optimal 94% success rate, demonstrating the effectiveness of combining hierarchical structures with inductive biases in mastering musculoskeletal control.
 
-![Combined Demo](samples/selected_samples/demo/combined_samples.mp4)
+![Combined Demo](samples/selected_samples/combined_samples.mp4)
 
 ## Table of Contents
 
