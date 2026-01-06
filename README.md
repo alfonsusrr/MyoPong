@@ -251,25 +251,25 @@ MyoPong/
 ├── eval.py                  # Evaluation script
 ├── sample.py                # Sample trajectory generation
 ├── modules/                 # Core modules for the project
-│   ├── training/           # Training utilities
-│   ├── models/             # Model architectures (hierarchical, lattice)
-│   ├── envs/              # Environment wrappers and curriculum
-│   └── callback/          # Callbacks (evaluation, checkpointing)
+│   ├── training/            # Training utilities
+│   ├── models/              # Model architectures (hierarchical, lattice)
+│   ├── envs/                # Environment wrappers and curriculum
+│   └── callback/            # Callbacks (evaluation, checkpointing)
 ├── physics_pong/            # Physics-based pong environment (6-DoF)
-│   ├── sample_pong.py      # Sample trajectory generation of 6-DoF environment
-│   ├── eval_physics.py     # Evaluation script of 6-DoF environment
-│   └── README.md           # Documentation for physics_pong
-├── SAR/                    # Synergy Action Reformulation components
-│   ├── data/               # Pre-trained SAR artifacts (ica.pkl, pca.pkl, scaler.pkl, etc.)
-│   └── README.md           # Documentation for SAR
-├── visualization/         # Visualization tools
-├── checkpoints/           # Saved model checkpoints
-├── runs/                  # Training logs and outputs
-├── samples/                # Demo videos and images
-├── environment.yml        # Conda environment file
-├── pyproject.toml         # UV/Python project configuration
-├── requirements.txt       # Python dependencies
-└── README.md             # This file
+│   ├── sample_pong.py       # Sample trajectory generation of 6-DoF environment
+│   ├── eval_physics.py      # Evaluation script of 6-DoF environment
+│   └── README.md            # Documentation for physics_pong
+├── SAR/                     # Synergy Action Reformulation components
+│   ├── data/                # Pre-trained SAR artifacts (ica.pkl, pca.pkl, scaler.pkl, etc.)
+│   └── README.md            # Documentation for SAR
+├── visualization/           # Visualization tools
+├── checkpoints/             # Saved model checkpoints
+├── runs/                    # Training logs and outputs
+├── samples/                 # Demo videos and images
+├── environment.yml          # Conda environment file
+├── pyproject.toml           # UV/Python project configuration
+├── requirements.txt         # Python dependencies
+└── README.md                # This file
 ```
 
 ## Features
